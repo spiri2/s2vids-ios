@@ -58,7 +58,7 @@ final class AuthViewModel: ObservableObject {
       lockRemaining = nil
       isSignedIn = true
     } catch {
-      let rec = LoginAttemptStore.shared.registerFailure(for: em)
+      let rec = LoginAttemptStore.shared.registerFailure(em) // <- fixed here
       if let until = rec.lockUntil {
         let rem = Int(ceil(until - Date().timeIntervalSince1970))
         self.errorMessage = "Too many attempts. Try again in \(formatCountdown(rem))."
