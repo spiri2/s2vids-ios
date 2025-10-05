@@ -21,7 +21,6 @@ struct DashboardView: View {
 
       ScrollView {
         VStack(spacing: 20) {
-
           header
 
           if shouldShowJellyfinPanel {
@@ -32,7 +31,7 @@ struct DashboardView: View {
             title: "Trending Movies",
             loading: vm.loadingTrending,
             emptyText: "No trending items available right now.",
-            items: vm.trending.map { PosterItem(id: $0.id, title: $0.title, year: $0.year, poster: posterURL(for:$0.title, year:$0.year)) },
+            items: vm.trending.map { PosterItem(id: $0.id, title: $0.title, year: $0.year, poster: posterURL(for: $0.title, year: $0.year)) },
             onPlay: { title, year in openByTitle(title, year: year) },
             onInfo: { title, year in openInfo(title, year: year) }
           )
@@ -41,7 +40,7 @@ struct DashboardView: View {
             title: "Recently Added",
             loading: vm.loadingRecent,
             emptyText: "No recent movies right now.",
-            items: vm.recent.map { PosterItem(id: $0.id, title: $0.title, year: $0.year, poster: $0.poster ?? posterURL(for:$0.title, year:$0.year)) },
+            items: vm.recent.map { PosterItem(id: $0.id, title: $0.title, year: $0.year, poster: $0.poster ?? posterURL(for: $0.title, year: $0.year)) },
             onPlay: { title, year in openByTitle(title, year: year) },
             onInfo: { title, year in openInfo(title, year: year) }
           )
@@ -50,8 +49,8 @@ struct DashboardView: View {
             title: "Upcoming Movies",
             loading: vm.loadingUpcoming,
             emptyText: "No upcoming titles right now.",
-            items: vm.upcoming.map { PosterItem(id: String($0.id), title: $0.title, year: $0.year, poster: $0.poster ?? posterURL(for:$0.title, year:$0.year)) },
-            onPlay: { _, _ in },   // no direct play
+            items: vm.upcoming.map { PosterItem(id: String($0.id), title: $0.title, year: $0.year, poster: $0.poster ?? posterURL(for: $0.title, year: $0.year)) },
+            onPlay: { _, _ in },
             onInfo: { title, year in openInfo(title, year: year) }
           )
         }
@@ -67,12 +66,12 @@ struct DashboardView: View {
     // Getting Started
     .sheet(isPresented: $vm.showGettingStarted) {
       GettingStartedSheet(showNoSubNotice: !hasAccess) { vm.showGettingStarted = false }
-        .presentationDetents([.medium, .large])
+        .modifier(PresentationDetentsCompat([.medium, .large]))
     }
     // Announcements
     .sheet(isPresented: $vm.showAnnouncements) {
       AnnouncementsSheet(isAdmin: isAdmin) { vm.showAnnouncements = false }
-        .presentationDetents([.large])
+        .modifier(PresentationDetentsCompat([.large]))
     }
     // Player
     .fullScreenCover(isPresented: $vm.playerOpen) {
@@ -81,7 +80,9 @@ struct DashboardView: View {
         .overlay(alignment: .topTrailing) {
           Button("Close") { vm.closePlayer() }
             .padding(12)
-            .background(.ultraThinMaterial, in: Capsule())
+            .background(
+              Capsule().fill(Color(uiColor: .systemUltraThinMaterial))
+            )
             .padding()
         }
     }
@@ -93,7 +94,9 @@ struct DashboardView: View {
   private var header: some View {
     HStack(spacing: 12) {
       Text("s2vids Dashboard")
-        .font(.title2).bold()
+        .font(.title2)
+        .fontWeight(.bold)
+
       Spacer()
 
       if !hasAccess && !isAdmin {
@@ -103,7 +106,9 @@ struct DashboardView: View {
           Label("Help", systemImage: "questionmark.circle")
             .padding(.vertical, 8)
             .padding(.horizontal, 12)
-            .background(Color(red:0.07, green:0.09, blue:0.17), in: Capsule())
+            .background(
+              Capsule().fill(Color(red: 0.07, green: 0.09, blue: 0.17))
+            )
         }
       }
 
@@ -112,10 +117,15 @@ struct DashboardView: View {
       } label: {
         Image(systemName: "megaphone")
           .padding(8)
-          .background(Color(red:0.07, green:0.09, blue:0.17), in: Circle())
+          .background(
+            Circle().fill(Color(red: 0.07, green: 0.09, blue: 0.17))
+          )
           .overlay(alignment: .topTrailing) {
             if vm.hasNewAnnouncements {
-              Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: 4, y: -4)
+              Circle()
+                .fill(Color.red)
+                .frame(width: 8, height: 8)
+                .offset(x: 4, y: -4)
             }
           }
       }
@@ -125,7 +135,9 @@ struct DashboardView: View {
       } label: {
         Image(systemName: "ellipsis.circle")
           .padding(8)
-          .background(Color(red:0.07, green:0.09, blue:0.17), in: Circle())
+          .background(
+            Circle().fill(Color(red: 0.07, green: 0.09, blue: 0.17))
+          )
       }
     }
     .foregroundStyle(.white)
@@ -134,9 +146,15 @@ struct DashboardView: View {
   // MARK: Jellyfin Panel
   private var jellyfinPanel: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Jellyfin Access").font(.title3).bold()
+      Text("Jellyfin Access")
+        .font(.title3)
+        .fontWeight(.bold)
+
       HStack {
-        Text("Username").foregroundStyle(.cyan).font(.caption).bold()
+        Text("Username")
+          .foregroundColor(.cyan)
+          .font(.caption)
+          .fontWeight(.bold)
         Spacer()
         Text(email).font(.subheadline)
       }
@@ -145,23 +163,30 @@ struct DashboardView: View {
       SecureField("New Password", text: $vm.jellyfinPassword)
         .textContentType(.newPassword)
         .padding(10)
-        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+          RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.2))
+        )
       SecureField("Confirm Password", text: $vm.jellyfinPassword2)
         .textContentType(.newPassword)
         .padding(10)
-        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+          RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.2))
+        )
 
       HStack {
         Button {
           Task { await vm.createOrResetJellyfin() }
         } label: {
           Text(vm.creatingJellyfin ? "Creating…" : "Create Account")
-            .bold()
+            .fontWeight(.bold)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(Color.green, in: RoundedRectangle(cornerRadius: 12))
+            .background(
+              RoundedRectangle(cornerRadius: 12).fill(Color.green)
+            )
             .foregroundColor(.black)
-        }.disabled(vm.creatingJellyfin)
+        }
+        .disabled(vm.creatingJellyfin)
 
         Button("Cancel") {
           vm.jellyfinPassword = ""
@@ -169,7 +194,9 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
-        .background(Color.gray.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+        .background(
+          RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.4))
+        )
       }
 
       if !vm.jellyfinError.isEmpty {
@@ -180,8 +207,12 @@ struct DashboardView: View {
       }
     }
     .padding(16)
-    .background(Color(red:0.06, green:0.09, blue:0.16), in: RoundedRectangle(cornerRadius: 20))
-    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08)))
+    .background(
+      RoundedRectangle(cornerRadius: 20).fill(Color(red: 0.06, green: 0.09, blue: 0.16))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08))
+    )
   }
 
   // MARK: Carousels
@@ -201,7 +232,9 @@ struct DashboardView: View {
     onInfo: @escaping (_ title: String, _ year: Int?) -> Void
   ) -> some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text(title).font(.headline).bold()
+      Text(title)
+        .font(.headline)
+        .fontWeight(.bold)
 
       if loading {
         Text("Loading…").foregroundStyle(.secondary)
@@ -236,7 +269,9 @@ struct DashboardView: View {
                       Image(systemName: "ellipsis")
                         .foregroundColor(.white)
                         .padding(8)
-                        .background(.black.opacity(0.5), in: Circle())
+                        .background(
+                          Circle().fill(Color.black.opacity(0.5))
+                        )
                     }
                     if hasAccess {
                       Button {
@@ -245,7 +280,9 @@ struct DashboardView: View {
                         Image(systemName: "play.fill")
                           .foregroundColor(.white)
                           .padding(8)
-                          .background(.black.opacity(0.5), in: Circle())
+                          .background(
+                            Circle().fill(Color.black.opacity(0.5))
+                          )
                       }
                     }
                   }
@@ -257,7 +294,9 @@ struct DashboardView: View {
                   .lineLimit(2)
                   .frame(width: 140, alignment: .leading)
               }
-              .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+              .background(
+                RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.15))
+              )
             }
           }
           .padding(.vertical, 2)
@@ -268,14 +307,19 @@ struct DashboardView: View {
   }
 
   private func posterURL(for title: String, year: Int?) -> String {
-    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"), resolvingAgainstBaseURL: false)!
-    var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
-    if let y = year { q.append(.init(name: "y", value: String(y))) }
-    c.queryItems = q
-    return c.string ?? ""
+    var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
+                              resolvingAgainstBaseURL: false)!
+    var q: [URLQueryItem] = [
+      URLQueryItem(name: "title", value: title),
+      URLQueryItem(name: "v", value: "1")
+    ]
+    if let y = year { q.append(URLQueryItem(name: "y", value: String(y))) }
+    comps.queryItems = q
+    return comps.string ?? ""
   }
 
   // MARK: Actions
+
   private func openInfo(_ title: String, year: Int?) {
     vm.infoTitle = title
     vm.infoYear = year
@@ -292,8 +336,9 @@ struct DashboardView: View {
         let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
         let (data, resp) = try await URLSession.shared.data(from: url)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let arr = try JSONSerialization.jsonObject(with: data) as? [[String:Any]] ?? []
+        let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
         let simp = title.lowercased()
+
         let match = arr.first(where: {
           guard let t = $0["title"] as? String else { return false }
           return t.lowercased() == simp
@@ -314,25 +359,64 @@ struct DashboardView: View {
   }
 }
 
-// MARK: - Simple Sheets + Presenter
+// MARK: - iOS 15 Compatibility Helpers
+
+/// Use NavigationStack on iOS 16+, otherwise NavigationView.
+@ViewBuilder
+private func NavContainer<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+  if #available(iOS 16.0, *) {
+    NavigationStack { content() }
+  } else {
+    NavigationView { content() }
+  }
+}
+
+/// Wrap presentationDetents to no-op on iOS 15.
+private struct PresentationDetentsCompat: ViewModifier {
+  @available(iOS 16.0, *)
+  var detents: Set<PresentationDetent> = []
+
+  init(_ detents: [Any]) {
+    if #available(iOS 16.0, *),
+       let d = detents as? [PresentationDetent] {
+      self.detents = Set(d)
+    }
+  }
+
+  func body(content: Content) -> some View {
+    if #available(iOS 16.0, *) {
+      content.presentationDetents(detents)
+    } else {
+      content
+    }
+  }
+}
+
 #if os(iOS)
 import UIKit
 #endif
+
+// MARK: - Simple Sheets + Presenter
 
 struct GettingStartedSheet: View {
   var showNoSubNotice: Bool
   var onClose: () -> Void
 
   var body: some View {
-    NavigationStack {
+    NavContainer {
       VStack(alignment: .leading, spacing: 12) {
         if showNoSubNotice {
           Text("You currently have **no active subscription**.")
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.red.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+            .background(
+              RoundedRectangle(cornerRadius: 12).fill(Color.red.opacity(0.2))
+            )
         }
-        Text("Getting started").font(.headline).bold()
+        Text("Getting started")
+          .font(.headline)
+          .fontWeight(.bold)
+
         Group {
           Text("1. Select **Subscribe**.")
           Text("2. After subscribing, return here and refresh.")
@@ -360,11 +444,11 @@ struct GettingStartedSheet: View {
 struct AnnouncementsSheet: View {
   var isAdmin: Bool
   var onClose: () -> Void
-  @State private var items: [[String:Any]] = []
+  @State private var items: [[String: Any]] = []
   @State private var loading = true
 
   var body: some View {
-    NavigationStack {
+    NavContainer {
       Group {
         if loading {
           ProgressView("Loading…")
@@ -380,7 +464,7 @@ struct AnnouncementsSheet: View {
                   .font(.caption)
                   .foregroundStyle(.secondary)
               }
-              .listRowBackground(Color(red:0.08, green:0.10, blue:0.17))
+              .listRowBackground(Color(red: 0.08, green: 0.10, blue: 0.17))
             }
           }
           .listStyle(.plain)
@@ -404,7 +488,7 @@ struct AnnouncementsSheet: View {
     do {
       let (data, resp) = try await URLSession.shared.data(from: url)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-      let arr = try JSONSerialization.jsonObject(with: data) as? [[String:Any]] ?? []
+      let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
       items = arr
     } catch { items = [] }
   }
@@ -416,7 +500,7 @@ struct InfoSheetView: View {
   let onClose: () -> Void
 
   var body: some View {
-    NavigationStack {
+    NavContainer {
       VStack(spacing: 16) {
         AsyncImage(url: URL(string: posterURL)) { img in
           img.resizable().scaledToFit()
@@ -424,7 +508,9 @@ struct InfoSheetView: View {
           Color.gray.opacity(0.2)
         }
         .frame(height: 280)
-        Text(title).font(.headline).multilineTextAlignment(.center)
+        Text(title)
+          .font(.headline)
+          .multilineTextAlignment(.center)
         Spacer()
       }
       .padding()
