@@ -185,7 +185,6 @@ struct DashboardView: View {
   }
 
   // MARK: Carousels
-
   struct PosterItem: Identifiable, Hashable {
     let id: String
     let title: String
@@ -277,28 +276,23 @@ struct DashboardView: View {
   }
 
   // MARK: Actions
-
   private func openInfo(_ title: String, year: Int?) {
     vm.infoTitle = title
     vm.infoYear = year
     vm.infoOpen = true
-    // Show a quick info sheet with poster + just the basics.
     let poster = posterURL(for: title, year: year)
     let text = "\(title)\(year != nil ? " (\(year!))" : "")"
     let sheet = InfoSheetView(title: text, posterURL: poster) { vm.infoOpen = false }
-    // Present inline
     UIApplication.shared.present(sheet)
   }
 
   private func openByTitle(_ title: String, year: Int?) {
-    // Your server’s /api/movies/list returns items with `title`, `streamUrl`
     Task {
       do {
         let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
         let (data, resp) = try await URLSession.shared.data(from: url)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
         let arr = try JSONSerialization.jsonObject(with: data) as? [[String:Any]] ?? []
-        // exact/simple match
         let simp = title.lowercased()
         let match = arr.first(where: {
           guard let t = $0["title"] as? String else { return false }
@@ -319,3 +313,138 @@ struct DashboardView: View {
     }
   }
 }
+
+// MARK: - Simple Sheets + Presenter
+#if os(iOS)
+import UIKit
+#endif
+
+struct GettingStartedSheet: View {
+  var showNoSubNotice: Bool
+  var onClose: () -> Void
+
+  var body: some View {
+    NavigationStack {
+      VStack(alignment: .leading, spacing: 12) {
+        if showNoSubNotice {
+          Text("You currently have **no active subscription**.")
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+        }
+        Text("Getting started").font(.headline).bold()
+        Group {
+          Text("1. Select **Subscribe**.")
+          Text("2. After subscribing, return here and refresh.")
+          Text("3. Create your **Jellyfin** account & set a password.")
+          Text("4. Open the menu (top right) and **Launch Jellyfin**.")
+          Text("5. Sign in with your email + password.")
+        }
+        .foregroundStyle(.secondary)
+
+        Link("Subscribe", destination: URL(string: "https://buy.stripe.com/aFa14o8B758CeTnfrjfw406")!)
+          .buttonStyle(.borderedProminent)
+
+        Spacer()
+      }
+      .padding()
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button("Close", action: onClose)
+        }
+      }
+    }
+  }
+}
+
+struct AnnouncementsSheet: View {
+  var isAdmin: Bool
+  var onClose: () -> Void
+  @State private var items: [[String:Any]] = []
+  @State private var loading = true
+
+  var body: some View {
+    NavigationStack {
+      Group {
+        if loading {
+          ProgressView("Loading…")
+        } else if items.isEmpty {
+          Text("No announcements yet.").foregroundStyle(.secondary)
+        } else {
+          List {
+            ForEach(0..<items.count, id: \.self) { i in
+              let a = items[i]
+              VStack(alignment: .leading, spacing: 6) {
+                Text((a["message"] as? String) ?? "—")
+                Text((a["author"] as? String) ?? "Admin")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+              .listRowBackground(Color(red:0.08, green:0.10, blue:0.17))
+            }
+          }
+          .listStyle(.plain)
+        }
+      }
+      .padding(.horizontal, 8)
+      .navigationTitle("Announcements")
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button("Close", action: onClose)
+        }
+      }
+      .task { await load() }
+    }
+  }
+
+  func load() async {
+    loading = true
+    defer { loading = false }
+    let url = AppConfig.apiBase.appendingPathComponent("api/announcement")
+    do {
+      let (data, resp) = try await URLSession.shared.data(from: url)
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+      let arr = try JSONSerialization.jsonObject(with: data) as? [[String:Any]] ?? []
+      items = arr
+    } catch { items = [] }
+  }
+}
+
+struct InfoSheetView: View {
+  let title: String
+  let posterURL: String
+  let onClose: () -> Void
+
+  var body: some View {
+    NavigationStack {
+      VStack(spacing: 16) {
+        AsyncImage(url: URL(string: posterURL)) { img in
+          img.resizable().scaledToFit()
+        } placeholder: {
+          Color.gray.opacity(0.2)
+        }
+        .frame(height: 280)
+        Text(title).font(.headline).multilineTextAlignment(.center)
+        Spacer()
+      }
+      .padding()
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button("Close", action: onClose)
+        }
+      }
+    }
+  }
+}
+
+#if os(iOS)
+extension UIApplication {
+  func present<V: View>(_ view: V) {
+    guard let scene = connectedScenes.first as? UIWindowScene,
+          let root = scene.windows.first?.rootViewController else { return }
+    let host = UIHostingController(rootView: view)
+    host.modalPresentationStyle = .formSheet
+    root.present(host, animated: true)
+  }
+}
+#endif
