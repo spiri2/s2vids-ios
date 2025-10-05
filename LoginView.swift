@@ -192,10 +192,17 @@ private struct LoginCard: View {
         )
       }
     } label: {
-      Text("Forgot password?")
-        .font(.caption)
-        .foregroundStyle(Color.blue)
-        .underline(true)
+      Group {
+        if #available(iOS 16.0, *) {
+          Text("Forgot password?")
+            .underline(true, pattern: .solid, color: .blue)
+        } else {
+          Text("Forgot password?")
+            .underline(true)
+            .foregroundColor(.blue)
+        }
+      }
+      .font(.caption)
     }
     .frame(maxWidth: .infinity, alignment: .center)
     .disabled(vm.isLoading)
@@ -233,7 +240,16 @@ private struct LoginCard: View {
   private var signupPrompt: some View {
     HStack {
       Text("Don’t have an account?")
-      Text("Sign up").bold().underline(true)
+      if #available(iOS 16.0, *) {
+        Text("Sign up")
+          .bold()
+          .underline(true, pattern: .solid, color: .purple)
+      } else {
+        Text("Sign up")
+          .bold()
+          .underline(true)
+          .foregroundColor(.purple)
+      }
     }
     .font(.footnote)
     .foregroundStyle(Color(.sRGB, red: 0.82, green: 0.64, blue: 1.0, opacity: 1))
