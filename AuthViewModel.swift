@@ -2,49 +2,49 @@
 //  AuthViewModel.swift
 //  s2vids
 //
-//  Created by Michael Espiritu on 10/5/25.
-//
 
 import Foundation
 import Supabase
 
 @MainActor
 final class AuthViewModel: ObservableObject {
-  @Published var email = ""
-  @Published var password = ""
-  @Published var isLoading = false
-  @Published var errorMessage = ""
-  @Published var info = ""
-  @Published var attemptsLeft: Int? = nil
-  @Published var lockRemaining: Int? = nil
-  @Published var isSignedIn = false
+  // Inputs
+  @Published var email: String = ""
+  @Published var password: String = ""
 
-  func onEmailChange(_ v: String) {
-    email = v
-    refreshState()
-  }
+  // UI state
+  @Published var isLoading: Bool = false
+  @Published var errorMessage: String = ""
+  @Published var info: String = ""
+  @Published var isSignedIn: Bool = false
 
-  func refreshState() {
-    attemptsLeft = LoginAttemptStore.shared.attemptsLeft(email)
-    lockRemaining = LoginAttemptStore.shared.lockRemaining(email)
-    if let rem = lockRemaining {
-      errorMessage = "Too many attempts. Try again in \(formatCountdown(rem))."
-    } else if errorMessage.hasPrefix("Too many attempts.") {
-      errorMessage = ""
-    }
+  // Lockout / attempts (optional – keep if you used it)
+  @Published var lockRemaining: TimeInterval?
+  @Published var attemptsLeft: Int?
+
+  // Show resend CTA if we detect the account isn’t confirmed
+  @Published var needsEmailConfirmation: Bool = false
+  @Published var resendStatus: String = ""
+
+  func onEmailChange(_ value: String) {
+    email = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    errorMessage = ""
+    info = ""
+    needsEmailConfirmation = false
+    resendStatus = ""
   }
 
   func signIn() async {
-    self.errorMessage = ""
-    self.info = ""
+    errorMessage = ""
+    info = ""
+    needsEmailConfirmation = false
+    resendStatus = ""
 
-    let em = email.trimmingCharacters(in: .whitespaces)
-    guard !em.isEmpty, !password.isEmpty else {
-      self.errorMessage = "Please enter both email and password."
-      return
-    }
-    if let rem = LoginAttemptStore.shared.lockRemaining(em) {
-      self.errorMessage = "Too many attempts. Try again in \(formatCountdown(rem))."
+    let em = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let pw = password
+
+    guard !em.isEmpty, !pw.isEmpty else {
+      errorMessage = "Email and password are required."
       return
     }
 
@@ -52,31 +52,47 @@ final class AuthViewModel: ObservableObject {
     defer { isLoading = false }
 
     do {
-      try await SupabaseManager.shared.client.auth.signIn(email: em, password: password)
-      LoginAttemptStore.shared.reset(em)
-      attemptsLeft = nil
-      lockRemaining = nil
+      // Supabase sign-in with email+password
+      let _ = try await SupabaseManager.shared.client.auth.signIn(email: em, password: pw)
+
+      // If we get here without throwing, user is signed in.
       isSignedIn = true
+
     } catch {
-      let rec = LoginAttemptStore.shared.registerFailure(em) // <- fixed here
-      if let until = rec.lockUntil {
-        let rem = Int(ceil(until - Date().timeIntervalSince1970))
-        self.errorMessage = "Too many attempts. Try again in \(formatCountdown(rem))."
+      // Common Supabase error reasons we want to map:
+      // - Email not confirmed
+      // - Invalid login credentials
+      // - Rate limits/OTP, etc.
+
+      let msg = (error as NSError).localizedDescription.lowercased()
+
+      if msg.contains("email not confirmed") ||
+         msg.contains("email needs to be confirmed") ||
+         msg.contains("user is not confirmed") ||
+         msg.contains("not confirmed") {
+
+        needsEmailConfirmation = true
+        errorMessage = "Email not confirmed. Please confirm your email first."
+
+      } else if msg.contains("invalid login credentials") ||
+                msg.contains("invalid login") ||
+                msg.contains("invalid email or password") {
+        errorMessage = "Invalid email or password."
       } else {
-        let left = max(0, 3 - rec.count)
-        self.errorMessage = "Sign-in failed. You have \(left) attempt\(left == 1 ? "" : "s") left."
+        errorMessage = error.localizedDescription
       }
-      refreshState()
     }
   }
 
   func forgotPassword(redirectTo: URL) async {
-    self.errorMessage = ""
-    self.info = ""
+    errorMessage = ""
+    info = ""
+    needsEmailConfirmation = false
+    resendStatus = ""
 
-    let em = email.trimmingCharacters(in: .whitespaces)
+    let em = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !em.isEmpty else {
-      self.errorMessage = "Enter your email first, then tap “Forgot password?”."
+      errorMessage = "Enter your email to reset your password."
       return
     }
 
@@ -85,9 +101,38 @@ final class AuthViewModel: ObservableObject {
 
     do {
       try await SupabaseManager.shared.client.auth.resetPasswordForEmail(em, redirectTo: redirectTo)
-      self.info = "Password reset email sent. Check your inbox."
+      info = "Password reset link sent if the email exists."
     } catch {
-      self.errorMessage = error.localizedDescription
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  /// Call your Next.js `/api/resend-confirmation` to resend the signup email.
+  func resendConfirmation() async {
+    resendStatus = ""
+    let em = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !em.isEmpty else {
+      resendStatus = "Enter your email above to resend."
+      return
+    }
+    resendStatus = "Sending…"
+
+    do {
+      var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/resend-confirmation"))
+      req.httpMethod = "POST"
+      req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      req.httpBody = try JSONSerialization.data(withJSONObject: ["email": em], options: [])
+
+      let (data, resp) = try await URLSession.shared.data(for: req)
+      let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+      if ok {
+        resendStatus = "Confirmation email sent! Check your inbox."
+      } else {
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        resendStatus = json?["error"] as? String ?? "Failed to send confirmation."
+      }
+    } catch {
+      resendStatus = "Failed: \(error.localizedDescription)"
     }
   }
 }
