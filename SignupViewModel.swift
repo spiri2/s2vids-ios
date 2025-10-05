@@ -17,27 +17,22 @@ final class SignupViewModel: ObservableObject {
   @Published var errorMessage = ""
   @Published var successMessage = ""
   @Published var resendStatus = ""
-
   @Published var showSendConfirmation = false
   @Published var showResend = false
 
   func signUp() async {
-    errorMessage = ""
-    successMessage = ""
-    resendStatus = ""
-    showSendConfirmation = false
-    showResend = false
+    // reset UI
+    errorMessage = ""; successMessage = ""; resendStatus = ""
+    showSendConfirmation = false; showResend = false
 
-    let em = email.trimmingCharacters(in: .whitespaces)
-    let pass = password
-    let confirm = confirmPassword
-    let code = inviteCode.trimmingCharacters(in: .whitespaces)
+    let em = email.trimmingCharacters(in: .whitespacesAndNewlines)
+    let code = inviteCode.trimmingCharacters(in: .whitespacesAndNewlines)
 
-    guard !em.isEmpty, !pass.isEmpty, !code.isEmpty else {
+    guard !em.isEmpty, !password.isEmpty, !code.isEmpty else {
       errorMessage = "Email, password, and invite code are required."
       return
     }
-    guard pass == confirm else {
+    guard password == confirmPassword else {
       errorMessage = "Passwords do not match."
       return
     }
@@ -46,17 +41,12 @@ final class SignupViewModel: ObservableObject {
     defer { isLoading = false }
 
     do {
-      // Optionally: validate invite code via RPC or Edge Function before sign up.
-      // try await SupabaseManager.shared.client.functions.invoke("validate_invite", arguments: ["code": code])
-
-      // Attach the invite code as user metadata so your backend can verify on sign-in.
+      // NOTE: `data:` expects [String: JSON]
       try await SupabaseManager.shared.client.auth.signUp(
         email: em,
-        password: pass,
-        data: ["invite_code": code]   // stored as user_metadata
+        password: password,
+        data: ["invite_code": .string(code)]
       )
-
-      // If your project has email confirmations enabled, the SDK sends it automatically.
       successMessage = "✅ Signup successful! Please send a confirmation email."
       showSendConfirmation = true
     } catch {
@@ -65,20 +55,18 @@ final class SignupViewModel: ObservableObject {
   }
 
   func sendOrResendConfirmation() async {
-    resendStatus = ""
-    let em = email.trimmingCharacters(in: .whitespaces)
-
+    let em = email.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !em.isEmpty else {
       resendStatus = "Enter your email above to send confirmation."
       return
     }
-
     resendStatus = "Sending confirmation email…"
+
     do {
-      // Supabase will re-send the signup confirmation email
+      // Correct order: email first, then type
       try await SupabaseManager.shared.client.auth.resend(
-        type: .signup,
-        email: em
+        email: em,
+        type: .signup
       )
       resendStatus = "Confirmation email sent! Check your inbox."
       showSendConfirmation = false
