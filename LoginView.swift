@@ -15,19 +15,27 @@ struct LoginView: View {
       content
     }
     .preferredColorScheme(.dark)
+
 #if os(iOS)
+    // When the user is signed in, show the Dashboard
     .fullScreenCover(isPresented: $vm.isSignedIn) {
-      HomeView()
+      DashboardView(
+        email: vm.email,
+        isAdmin: false,                // TODO: pass real value from your user metadata
+        subscriptionStatus: "active",  // TODO: fetch from your API and pass through
+        isTrialing: false              // TODO: pass real value if you support trials
+      )
     }
 #endif
-    .sheet(isPresented: $showSignup) {      // presents the external SignupView
+
+    // Present Sign Up sheet
+    .sheet(isPresented: $showSignup) {
       SignupView()
     }
   }
 
   private var background: some View {
-    Color(red: 0.043, green: 0.063, blue: 0.125)
-      .ignoresSafeArea()
+    Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
   }
 
   private var content: some View {
@@ -52,8 +60,7 @@ private struct HeaderCard: View {
       .foregroundColor(.blue)
 
       Text("Sign in to your account")
-        .font(.headline)
-        .bold()
+        .font(.headline).bold()
     }
     .padding(10)
     .frame(maxWidth: .infinity)
@@ -97,10 +104,7 @@ private struct LoginCard: View {
   }
 
   private var title: some View {
-    Text("Sign In")
-      .font(.subheadline)
-      .bold()
-      .foregroundStyle(Color.blue)
+    Text("Sign In").font(.subheadline).bold().foregroundStyle(Color.blue)
   }
 
   private var errorBanner: some View {
@@ -133,11 +137,7 @@ private struct LoginCard: View {
 
   private var emailField: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text("Email")
-        .font(.caption)
-        .bold()
-        .foregroundColor(.blue)
-
+      Text("Email").font(.caption).bold().foregroundColor(.blue)
       TextField("you@example.com", text: Binding(
         get: { vm.email },
         set: { vm.onEmailChange($0) }
@@ -149,37 +149,25 @@ private struct LoginCard: View {
       .autocorrectionDisabled()
 #endif
       .padding(10)
-      .background(
-        RoundedRectangle(cornerRadius: 10)
-          .fill(Color(.sRGB, red: 0.12, green: 0.14, blue: 0.20, opacity: 1))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 10)
-          .stroke(Color(.sRGB, red: 0.20, green: 0.24, blue: 0.30, opacity: 1))
-      )
+      .background(RoundedRectangle(cornerRadius: 10)
+        .fill(Color(.sRGB, red: 0.12, green: 0.14, blue: 0.20, opacity: 1)))
+      .overlay(RoundedRectangle(cornerRadius: 10)
+        .stroke(Color(.sRGB, red: 0.20, green: 0.24, blue: 0.30, opacity: 1)))
     }
   }
 
   private var passwordField: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text("Password")
-        .font(.caption)
-        .bold()
-        .foregroundColor(.blue)
-
+      Text("Password").font(.caption).bold().foregroundColor(.blue)
       SecureField("••••••••", text: $vm.password)
 #if os(iOS)
       .textContentType(.password)
 #endif
       .padding(10)
-      .background(
-        RoundedRectangle(cornerRadius: 10)
-          .fill(Color(.sRGB, red: 0.12, green: 0.14, blue: 0.20, opacity: 1))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 10)
-          .stroke(Color(.sRGB, red: 0.20, green: 0.24, blue: 0.30, opacity: 1))
-      )
+      .background(RoundedRectangle(cornerRadius: 10)
+        .fill(Color(.sRGB, red: 0.12, green: 0.14, blue: 0.20, opacity: 1)))
+      .overlay(RoundedRectangle(cornerRadius: 10)
+        .stroke(Color(.sRGB, red: 0.20, green: 0.24, blue: 0.30, opacity: 1)))
     }
   }
 
@@ -222,12 +210,9 @@ private struct LoginCard: View {
   }
 
   private var signInButton: some View {
-    Button {
-      Task { await vm.signIn() }
-    } label: {
+    Button { Task { await vm.signIn() } } label: {
       Text(vm.isLoading ? "Signing in…" : "Sign In")
-        .font(.subheadline)
-        .bold()
+        .font(.subheadline).bold()
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.green))
@@ -241,14 +226,9 @@ private struct LoginCard: View {
       Text("Don’t have an account?")
       Button { showSignup = true } label: {
         if #available(iOS 16.0, *) {
-          Text("Sign up")
-            .bold()
-            .underline(true, pattern: .solid, color: .purple)
+          Text("Sign up").bold().underline(true, pattern: .solid, color: .purple)
         } else {
-          Text("Sign up")
-            .bold()
-            .underline(true)
-            .foregroundColor(.purple)
+          Text("Sign up").bold().underline(true).foregroundColor(.purple)
         }
       }
     }
@@ -258,19 +238,3 @@ private struct LoginCard: View {
     .padding(.top, 6)
   }
 }
-
-// MARK: - HomeView
-struct HomeView: View {
-  var body: some View {
-    VStack(spacing: 16) {
-      Text("✅ Signed In")
-        .font(.title2)
-        .bold()
-      Text("Welcome to your movie dashboard!")
-        .font(.subheadline)
-        .foregroundColor(.secondary)
-    }
-  }
-}
-
-#Preview { LoginView() }
