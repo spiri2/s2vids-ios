@@ -73,9 +73,14 @@ final class DashboardViewModel: ObservableObject {
   // MARK: - Networking helpers
 
   private func apiURL(_ path: String, query: [URLQueryItem]? = nil) -> URL {
-    var u = AppConfig.apiBase.appendingPathComponent(path)
-    if let query { u.append(queryItems: query) }
-    return u
+    var comps = URLComponents(
+      url: AppConfig.apiBase.appendingPathComponent(path),
+      resolvingAgainstBaseURL: false
+    )!
+    if let query {
+      comps.queryItems = (comps.queryItems ?? []) + query
+    }
+    return comps.url!
   }
 
   func bootstrap(email: String, isAdmin: Bool, subscriptionStatus: String, isTrialing: Bool) {
@@ -95,8 +100,7 @@ final class DashboardViewModel: ObservableObject {
   }
 
   func probeAnnouncements() async {
-    // Lightweight “poke”; if it 200s, flip the dot on.
-    let url = apiURL("api/announcement") // your endpoint 200s on GET (or adjust)
+    let url = apiURL("api/announcement")
     var req = URLRequest(url: url); req.httpMethod = "GET"
     do {
       _ = try await URLSession.shared.data(for: req)
@@ -116,7 +120,7 @@ final class DashboardViewModel: ObservableObject {
     do {
       let (data, resp) = try await URLSession.shared.data(for: req)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { hasJellyfinAccount = false; return }
-      let obj = try JSONSerialization.jsonObject(with: data) as? [String:Any]
+      let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
       hasJellyfinAccount = (obj?["exists"] as? Bool) ?? false
     } catch {
       hasJellyfinAccount = false
@@ -149,7 +153,7 @@ final class DashboardViewModel: ObservableObject {
         hasJellyfinAccount = true
         jellyfinSuccess = "Jellyfin account created!"
       } else {
-        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String:Any]
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         jellyfinError = (obj?["error"] as? String) ?? "Failed to create Jellyfin account."
       }
     } catch {
@@ -160,15 +164,15 @@ final class DashboardViewModel: ObservableObject {
   func loadTrending() async {
     loadingTrending = true
     defer { loadingTrending = false }
-    let url = apiURL("api/jellyseerr/trending", query: [ .init(name:"limit", value:"20") ])
+    let url = apiURL("api/jellyseerr/trending", query: [ URLQueryItem(name: "limit", value: "20") ])
     do {
       let (data, resp) = try await URLSession.shared.data(from: url)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { trending = []; return }
-      let obj = try JSONSerialization.jsonObject(with: data) as? [String:Any]
-      let items = obj?["items"] as? [[String:Any]] ?? []
+      let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let items = obj?["items"] as? [[String: Any]] ?? []
       self.trending = items.compactMap { d in
         TrendingItem(
-          id: String(d["id"] ?? UUID().uuidString),
+          id: String(describing: d["id"] ?? UUID().uuidString),
           title: (d["title"] as? String) ?? "",
           jellyfinUrl: d["jellyfinUrl"] as? String,
           poster: d["poster"] as? String,
@@ -183,15 +187,15 @@ final class DashboardViewModel: ObservableObject {
   func loadRecent() async {
     loadingRecent = true
     defer { loadingRecent = false }
-    let url = apiURL("api/jellyfin/recent", query: [ .init(name:"limit", value:"40") ])
+    let url = apiURL("api/jellyfin/recent", query: [ URLQueryItem(name: "limit", value: "40") ])
     do {
       let (data, resp) = try await URLSession.shared.data(from: url)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { recent = []; return }
-      let obj = try JSONSerialization.jsonObject(with: data) as? [String:Any]
-      let items = obj?["items"] as? [[String:Any]] ?? []
+      let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let items = obj?["items"] as? [[String: Any]] ?? []
       recent = items.compactMap { d in
         RecentItem(
-          id: String(d["id"] ?? UUID().uuidString),
+          id: String(describing: d["id"] ?? UUID().uuidString),
           title: (d["title"] as? String) ?? "",
           year: d["year"] as? Int,
           poster: d["poster"] as? String
@@ -205,15 +209,15 @@ final class DashboardViewModel: ObservableObject {
   func loadUpcoming() async {
     loadingUpcoming = true
     defer { loadingUpcoming = false }
-    let url = apiURL("api/jellyseerr/upcoming", query: [ .init(name:"limit", value:"20") ])
+    let url = apiURL("api/jellyseerr/upcoming", query: [ URLQueryItem(name: "limit", value: "20") ])
     do {
       let (data, resp) = try await URLSession.shared.data(from: url)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { upcoming = []; return }
-      let obj = try JSONSerialization.jsonObject(with: data) as? [String:Any]
-      let items = obj?["items"] as? [[String:Any]] ?? []
+      let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let items = obj?["items"] as? [[String: Any]] ?? []
       upcoming = items.compactMap { d in
         UpcomingItem(
-          id: String(d["id"] ?? UUID().uuidString),
+          id: String(describing: d["id"] ?? UUID().uuidString),
           title: (d["title"] as? String) ?? "",
           year: d["year"] as? Int,
           poster: d["poster"] as? String,
