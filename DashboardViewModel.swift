@@ -7,6 +7,8 @@ import Foundation
 import SwiftUI
 import AVKit
 
+// MARK: - Models
+
 struct TrendingItem: Identifiable, Codable, Hashable {
   let id: String
   let title: String
@@ -29,6 +31,18 @@ struct RecentItem: Identifiable, Codable, Hashable {
   let title: String
   let year: Int?
   let poster: String?
+}
+
+// Stripe status payload from your Next.js API
+private struct StripeStatusPayload: Decodable {
+  let active: Bool?
+  let status: String?
+  let current_period_end: Int?
+  let trial_end: Int?
+  let cancel_at: Int?
+  let canceled_at: Int?
+  let cancel_at_period_end: Bool?
+  let plan: String?
 }
 
 @MainActor
@@ -70,7 +84,7 @@ final class DashboardViewModel: ObservableObject {
   @Published var playerStream: URL?
   @Published var player = AVPlayer()
 
-  // MARK: - Networking helpers
+  // MARK: - Helpers
 
   private func apiURL(_ path: String, query: [URLQueryItem]? = nil) -> URL {
     var comps = URLComponents(
@@ -83,14 +97,18 @@ final class DashboardViewModel: ObservableObject {
     return comps.url!
   }
 
+  // MARK: - Bootstrap
+
   func bootstrap(email: String, isAdmin: Bool, subscriptionStatus: String, isTrialing: Bool) {
     self.email = email
     self.isAdmin = isAdmin
     self.subscriptionStatus = subscriptionStatus
     self.isTrialing = isTrialing
+    // initial gate (will be refined after Stripe check)
     self.showGettingStarted = !(isTrialing || subscriptionStatus == "active") && !isAdmin
 
     Task {
+      await refreshStripeStatus()   // <--- Stripe check first
       await probeAnnouncements()
       await probeJellyfin()
       await loadTrending()
@@ -98,6 +116,53 @@ final class DashboardViewModel: ObservableObject {
       await loadUpcoming()
     }
   }
+
+  // MARK: - Stripe
+
+  /// Hits /api/get-stripe-status?email=... and updates gating flags.
+  func refreshStripeStatus() async {
+    guard !email.isEmpty else { return }
+    let url = apiURL("api/get-stripe-status", query: [URLQueryItem(name: "email", value: email)])
+
+    do {
+      let (data, resp) = try await URLSession.shared.data(from: url)
+      guard let http = resp as? HTTPURLResponse else { return }
+
+      if http.statusCode == 404 {
+        // No customer—treat as no active sub
+        subscriptionStatus = ""
+        isTrialing = false
+        showGettingStarted = !isAdmin
+        return
+      }
+
+      guard http.statusCode == 200 else {
+        // Any other error => don't block the user, but keep gate visible if not admin
+        subscriptionStatus = ""
+        isTrialing = false
+        showGettingStarted = !isAdmin
+        return
+      }
+
+      let status = try JSONDecoder().decode(StripeStatusPayload.self, from: data)
+
+      // Update state from payload
+      subscriptionStatus = status.status ?? ""
+      let now = Date().timeIntervalSince1970
+      let trialActiveFromStripe = (status.trial_end ?? 0) > Int(now)
+      let isActive = (status.active ?? false) || ["active", "past_due"].contains(subscriptionStatus)
+      isTrialing = subscriptionStatus == "trialing" || trialActiveFromStripe
+
+      // Gate: hide Getting Started if active or trialing (or admin)
+      showGettingStarted = !(isActive || isTrialing) && !isAdmin
+
+    } catch {
+      // Network failure—leave existing values, but keep Getting Started for non-admins
+      showGettingStarted = !(isTrialing || subscriptionStatus == "active") && !isAdmin
+    }
+  }
+
+  // MARK: - Announcements
 
   func probeAnnouncements() async {
     let url = apiURL("api/announcement")
@@ -109,6 +174,8 @@ final class DashboardViewModel: ObservableObject {
       hasNewAnnouncements = true
     }
   }
+
+  // MARK: - Jellyfin
 
   func probeJellyfin() async {
     guard !email.isEmpty else { return }
@@ -160,6 +227,8 @@ final class DashboardViewModel: ObservableObject {
       jellyfinError = error.localizedDescription
     }
   }
+
+  // MARK: - Content loads
 
   func loadTrending() async {
     loadingTrending = true
