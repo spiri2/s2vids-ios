@@ -2,14 +2,12 @@
 //  LoginView.swift
 //  s2vids
 //
-//  Created by Michael Espiritu on 10/5/25.
-//
 
 import SwiftUI
 
 struct LoginView: View {
   @StateObject private var vm = AuthViewModel()
-  @State private var showSignup = false   // <- added
+  @State private var showSignup = false
 
   var body: some View {
     ZStack {
@@ -22,8 +20,7 @@ struct LoginView: View {
       HomeView()
     }
 #endif
-    // Present Sign Up
-    .sheet(isPresented: $showSignup) {
+    .sheet(isPresented: $showSignup) {      // presents the external SignupView
       SignupView()
     }
   }
@@ -36,7 +33,7 @@ struct LoginView: View {
   private var content: some View {
     VStack(spacing: 16) {
       HeaderCard()
-      LoginCard(vm: vm, showSignup: $showSignup)   // <- pass binding down
+      LoginCard(vm: vm, showSignup: $showSignup)
     }
     .padding(.horizontal, 20)
   }
@@ -74,7 +71,7 @@ private struct HeaderCard: View {
 // MARK: - LoginCard
 private struct LoginCard: View {
   @ObservedObject var vm: AuthViewModel
-  @Binding var showSignup: Bool   // <- receive binding
+  @Binding var showSignup: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
