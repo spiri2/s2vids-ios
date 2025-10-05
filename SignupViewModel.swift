@@ -4,7 +4,6 @@
 //
 
 import Foundation
-import Supabase
 
 @MainActor
 final class SignupViewModel: ObservableObject {
@@ -41,16 +40,33 @@ final class SignupViewModel: ObservableObject {
     defer { isLoading = false }
 
     do {
-      // NOTE: `data:` expects [String: JSON]
-      try await SupabaseManager.shared.client.auth.signUp(
-        email: em,
-        password: password,
-        data: ["invite_code": .string(code)]
-      )
-      successMessage = "✅ Signup successful! Please send a confirmation email."
-      showSendConfirmation = true
+      // Build the URL to your Next.js signup endpoint
+      let url = AppConfig.apiBase.appendingPathComponent("api/signup")
+
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+      let body: [String: String] = [
+        "email": em,
+        "password": password,
+        "inviteCode": code
+      ]
+      request.httpBody = try JSONEncoder().encode(body)
+
+      let (data, response) = try await URLSession.shared.data(for: request)
+      guard let httpResponse = response as? HTTPURLResponse else {
+        throw URLError(.badServerResponse)
+      }
+
+      if httpResponse.statusCode == 200 {
+        successMessage = "✅ Signup successful! Please check your email to confirm."
+      } else {
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        errorMessage = json?["error"] as? String ?? "Signup failed. Try again."
+      }
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = "Failed to connect: \(error.localizedDescription)"
     }
   }
 
@@ -63,16 +79,28 @@ final class SignupViewModel: ObservableObject {
     resendStatus = "Sending confirmation email…"
 
     do {
-      // Correct order: email first, then type
-      try await SupabaseManager.shared.client.auth.resend(
-        email: em,
-        type: .signup
-      )
-      resendStatus = "Confirmation email sent! Check your inbox."
-      showSendConfirmation = false
-      showResend = true
+      let url = AppConfig.apiBase.appendingPathComponent("api/resend-confirmation")
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      let body = ["email": em]
+      request.httpBody = try JSONEncoder().encode(body)
+
+      let (data, response) = try await URLSession.shared.data(for: request)
+      guard let httpResponse = response as? HTTPURLResponse else {
+        throw URLError(.badServerResponse)
+      }
+
+      if httpResponse.statusCode == 200 {
+        resendStatus = "Confirmation email sent! Check your inbox."
+        showSendConfirmation = false
+        showResend = true
+      } else {
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        resendStatus = json?["error"] as? String ?? "Failed to send confirmation email."
+      }
     } catch {
-      resendStatus = "Failed to send confirmation email: \(error.localizedDescription)"
+      resendStatus = "Failed: \(error.localizedDescription)"
     }
   }
 }
