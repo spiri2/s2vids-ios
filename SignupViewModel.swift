@@ -20,7 +20,7 @@ final class SignupViewModel: ObservableObject {
   @Published var showResend = false
 
   func signUp() async {
-    // reset UI
+    // Reset UI
     errorMessage = ""; successMessage = ""; resendStatus = ""
     showSendConfirmation = false; showResend = false
 
@@ -60,7 +60,10 @@ final class SignupViewModel: ObservableObject {
       }
 
       if httpResponse.statusCode == 200 {
-        successMessage = "✅ Signup successful! Please check your email to confirm."
+        // ✅ Show confirmation button after success
+        successMessage = "✅ Signup successful! Please send a confirmation email."
+        showSendConfirmation = true
+        showResend = false
       } else {
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         errorMessage = json?["error"] as? String ?? "Signup failed. Try again."
