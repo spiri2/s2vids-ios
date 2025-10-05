@@ -9,6 +9,7 @@ import SwiftUI
 
 struct LoginView: View {
   @StateObject private var vm = AuthViewModel()
+  @State private var showSignup = false   // <- added
 
   var body: some View {
     ZStack {
@@ -20,11 +21,11 @@ struct LoginView: View {
     .fullScreenCover(isPresented: $vm.isSignedIn) {
       HomeView()
     }
-#else
-    .sheet(isPresented: $vm.isSignedIn) {
-      HomeView().frame(minWidth: 480, minHeight: 320)
-    }
 #endif
+    // Present Sign Up
+    .sheet(isPresented: $showSignup) {
+      SignupView()
+    }
   }
 
   private var background: some View {
@@ -35,7 +36,7 @@ struct LoginView: View {
   private var content: some View {
     VStack(spacing: 16) {
       HeaderCard()
-      LoginCard(vm: vm)
+      LoginCard(vm: vm, showSignup: $showSignup)   // <- pass binding down
     }
     .padding(.horizontal, 20)
   }
@@ -73,6 +74,7 @@ private struct HeaderCard: View {
 // MARK: - LoginCard
 private struct LoginCard: View {
   @ObservedObject var vm: AuthViewModel
+  @Binding var showSignup: Bool   // <- receive binding
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -240,15 +242,17 @@ private struct LoginCard: View {
   private var signupPrompt: some View {
     HStack {
       Text("Don’t have an account?")
-      if #available(iOS 16.0, *) {
-        Text("Sign up")
-          .bold()
-          .underline(true, pattern: .solid, color: .purple)
-      } else {
-        Text("Sign up")
-          .bold()
-          .underline(true)
-          .foregroundColor(.purple)
+      Button { showSignup = true } label: {
+        if #available(iOS 16.0, *) {
+          Text("Sign up")
+            .bold()
+            .underline(true, pattern: .solid, color: .purple)
+        } else {
+          Text("Sign up")
+            .bold()
+            .underline(true)
+            .foregroundColor(.purple)
+        }
       }
     }
     .font(.footnote)
