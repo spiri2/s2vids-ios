@@ -31,6 +31,11 @@ struct DashboardView: View {
   }
   @State private var infoPayload: InfoPayload?
 
+  // Hardcoded admin email override + prop
+  private var effectiveIsAdmin: Bool {
+    isAdmin || email.lowercased() == "mspiri2@outlook.com"
+  }
+
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
@@ -83,7 +88,7 @@ struct DashboardView: View {
     .preferredColorScheme(.dark)
     .onAppear {
       vm.bootstrap(email: email,
-                   isAdmin: isAdmin,
+                   isAdmin: effectiveIsAdmin,
                    subscriptionStatus: subscriptionStatus,
                    isTrialing: isTrialing)
       resolveAccess()
@@ -99,7 +104,7 @@ struct DashboardView: View {
 
     // Announcements
     .sheet(isPresented: $vm.showAnnouncements) {
-      AnnouncementsSheet(isAdmin: isAdmin) {
+      AnnouncementsSheet(isAdmin: effectiveIsAdmin) {
         vm.showAnnouncements = false
       }
       .modifier(DetentsCompatLarge())
@@ -132,7 +137,7 @@ struct DashboardView: View {
   // Prefer resolved values from API; fall back to incoming props until resolved.
   private var effectiveStatus: String { accessResolved ? resolvedStatus : subscriptionStatus }
   private var effectiveTrialing: Bool { accessResolved ? resolvedTrialing : isTrialing }
-  private var hasAccess: Bool { effectiveTrialing || effectiveStatus == "active" || isAdmin }
+  private var hasAccess: Bool { effectiveTrialing || effectiveStatus == "active" || effectiveIsAdmin }
 
   private func resolveAccess() {
     guard !email.isEmpty else { return }
@@ -176,7 +181,7 @@ struct DashboardView: View {
         .fontWeight(.bold)
       Spacer()
 
-      if !hasAccess && !isAdmin {
+      if !hasAccess && !effectiveIsAdmin {
         Button {
           vm.showGettingStarted = true
         } label: {
@@ -213,14 +218,13 @@ struct DashboardView: View {
       // User dropdown (overlay; no layout shift)
       UserMenuButton(
         email: email,
-        isAdmin: isAdmin,
+        isAdmin: effectiveIsAdmin,
         onRequireAccess: { vm.showGettingStarted = true },
         onLogout: { /* hook up to your logout */ }
       )
     }
     .foregroundColor(.white)
-    // ⬇️ Keep the whole header above the scrolled content, so the menu panel sits on top
-    .zIndex(10_000)
+    .zIndex(10_000) // keep menu above posters
   }
 
   // MARK: Carousels / Poster
@@ -268,7 +272,6 @@ struct DashboardView: View {
                   }
                 }
 
-                // Center play button
                 Button {
                   onPlay(it.title, it.year)
                 } label: {
@@ -278,7 +281,6 @@ struct DashboardView: View {
                     .background(.black.opacity(0.60), in: Circle())
                 }
               }
-              // Bottom-right info button
               .overlay(alignment: .bottomTrailing) {
                 Button {
                   onInfo(it.title, it.year)
@@ -290,7 +292,6 @@ struct DashboardView: View {
                 }
                 .padding(8)
               }
-              // Title bottom-left
               .overlay(alignment: .bottomLeading) {
                 Text(it.title)
                   .font(.caption)
@@ -433,7 +434,7 @@ struct MovieInfoSheet: View {
     guard let base = URL(string: "https://www.omdbapi.com/") else { return }
     var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
     components.queryItems = [
-      .init(name: "apikey", value: AppConfig.omdbKey), // must exist in AppConfig+Keys.swift
+      .init(name: "apikey", value: AppConfig.omdbKey),
       .init(name: "t", value: title),
       .init(name: "plot", value: "full")
     ]
@@ -595,7 +596,6 @@ private struct UserMenuButton: View {
         .frame(width: 32, height: 32)
     }
     .buttonStyle(.plain)
-    // The menu is drawn here; overlays don't affect layout.
     .overlay(alignment: .topTrailing) {
       if open {
         VStack(spacing: 0) {
@@ -632,7 +632,8 @@ private struct UserMenuButton: View {
             }
             Row(icon: "gear", title: "Settings") { open = false }
 
-            if isAdmin {
+            // Admin visible if isAdmin already OR email is the hardcoded admin account.
+            if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
               Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) { open = false }
             }
 
@@ -657,8 +658,8 @@ private struct UserMenuButton: View {
         .frame(width: 230)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0.09, green: 0.11, blue: 0.17)))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.35)))
-        .offset(y: 36)                       // float below the avatar
-        .zIndex(100_000)                     // ⬅️ ensure above everything
+        .offset(y: 36)
+        .zIndex(100_000)
         .transition(.scale(scale: 0.95).combined(with: .opacity))
       }
     }
@@ -687,7 +688,7 @@ private struct UserMenuButton: View {
   }
 
   private func goOrWarn(_ go: () -> Void) {
-    if hasAccess || isAdmin {
+    if hasAccess || isAdmin || email.lowercased() == "mspiri2@outlook.com" {
       go()
     } else {
       onRequireAccess()
