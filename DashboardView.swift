@@ -5,53 +5,113 @@
 
 import SwiftUI
 import AVKit
-#if os(iOS)
-import UIKit
-#endif
 
 // MARK: - Dashboard
 
 struct DashboardView: View {
   @StateObject private var vm = DashboardViewModel()
 
-  // Inject these from Auth after login:
+  // Inject after login:
   var email: String
   var isAdmin: Bool
   var subscriptionStatus: String
   var isTrialing: Bool
 
+  // Resolved from API so gating is correct even if props are placeholders
+  @State private var resolvedStatus: String = ""
+  @State private var resolvedTrialing: Bool = false
+  @State private var accessResolved = false
+
+  // Info sheet state (avoid UIApplication.present)
+  struct InfoPayload: Identifiable {
+    let id = UUID()
+    let title: String
+    let year: Int?
+    let posterURL: String
+  }
+  @State private var infoPayload: InfoPayload?
+
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
 
-      // iOS 15/16 keyboard-dismiss safe ScrollView
-      if #available(iOS 16.0, *) {
-        ScrollView { content }.scrollDismissesKeyboard(.interactively)
-      } else {
-        ScrollView { content }
+      ScrollView {
+        VStack(spacing: 20) {
+          header
+
+          carousel(
+            title: "Trending Movies",
+            loading: vm.loadingTrending,
+            emptyText: "No trending items available right now.",
+            items: vm.trending.map {
+              PosterItem(id: $0.id, title: $0.title, year: $0.year,
+                         poster: posterURL(for: $0.title, year: $0.year))
+            },
+            onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
+            onInfo: { title, year in showInfo(title, year: year) }
+          )
+
+          carousel(
+            title: "Recently Added",
+            loading: vm.loadingRecent,
+            emptyText: "No recent movies right now.",
+            items: vm.recent.map {
+              PosterItem(id: $0.id, title: $0.title, year: $0.year,
+                         poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
+            },
+            onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
+            onInfo: { title, year in showInfo(title, year: year) }
+          )
+
+          carousel(
+            title: "Upcoming Movies",
+            loading: vm.loadingUpcoming,
+            emptyText: "No upcoming titles right now.",
+            items: vm.upcoming.map {
+              PosterItem(id: String($0.id), title: $0.title, year: $0.year,
+                         poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
+            },
+            onPlay: { _, _ in /* requests not supported here */ },
+            onInfo: { title, year in showInfo(title, year: year) }
+          )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 40)
       }
     }
     .preferredColorScheme(.dark)
     .onAppear {
-      vm.bootstrap(
-        email: email,
-        isAdmin: isAdmin,
-        subscriptionStatus: subscriptionStatus,
-        isTrialing: isTrialing
-      )
+      vm.bootstrap(email: email,
+                   isAdmin: isAdmin,
+                   subscriptionStatus: subscriptionStatus,
+                   isTrialing: isTrialing)
+      resolveAccess()
     }
-    // Getting Started (matches your web modal copy)
+
+    // Getting Started
     .sheet(isPresented: $vm.showGettingStarted) {
-      GettingStartedSheet(showNoSubNotice: !hasAccess) { vm.showGettingStarted = false }
-        .modifier(DetentsCompatMediumLarge())
+      GettingStartedSheet(showNoSubNotice: !hasAccess) {
+        vm.showGettingStarted = false
+      }
+      .modifier(DetentsCompatMediumLarge())
     }
+
     // Announcements
     .sheet(isPresented: $vm.showAnnouncements) {
-      AnnouncementsSheet(isAdmin: isAdmin) { vm.showAnnouncements = false }
-        .modifier(DetentsCompatLarge())
+      AnnouncementsSheet(isAdmin: isAdmin) {
+        vm.showAnnouncements = false
+      }
+      .modifier(DetentsCompatLarge())
     }
-    // Player (only presented after we validate access in playOrShowOnboarding)
-    .fullScreenCover(isPresented: $vm.playerOpen) {
+
+    // Player (only if hasAccess)
+    .fullScreenCover(
+      isPresented: Binding(
+        get: { vm.playerOpen && hasAccess },
+        set: { vm.playerOpen = $0 }
+      )
+    ) {
       VideoPlayer(player: vm.player)
         .ignoresSafeArea()
         .overlay(alignment: .topTrailing) {
@@ -61,64 +121,59 @@ struct DashboardView: View {
             .padding()
         }
     }
+
+    // Info sheet (SwiftUI-native)
+    .sheet(item: $infoPayload) { payload in
+      MovieInfoSheet(title: payload.title, year: payload.year, posterURL: payload.posterURL)
+        .modifier(DetentsCompatMediumLarge())
+    }
   }
 
-  private var hasAccess: Bool { isTrialing || subscriptionStatus == "active" || isAdmin }
+  // Prefer resolved values from API; fall back to incoming props until resolved.
+  private var effectiveStatus: String { accessResolved ? resolvedStatus : subscriptionStatus }
+  private var effectiveTrialing: Bool { accessResolved ? resolvedTrialing : isTrialing }
+  private var hasAccess: Bool { effectiveTrialing || effectiveStatus == "active" || isAdmin }
 
-  // MARK: - Scroll Content
-  @ViewBuilder
-  private var content: some View {
-    VStack(spacing: 20) {
-      header
-
-      carousel(
-        title: "Trending Movies",
-        loading: vm.loadingTrending,
-        emptyText: "No trending items available right now.",
-        items: vm.trending.map {
-          PosterItem(id: $0.id, title: $0.title, year: $0.year,
-                     poster: posterURL(for: $0.title, year: $0.year))
-        },
-        onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
-        onInfo: { title, year in openInfo(title, year: year) }
-      )
-
-      carousel(
-        title: "Recently Added",
-        loading: vm.loadingRecent,
-        emptyText: "No recent movies right now.",
-        items: vm.recent.map {
-          PosterItem(id: $0.id, title: $0.title, year: $0.year,
-                     poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
-        },
-        onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
-        onInfo: { title, year in openInfo(title, year: year) }
-      )
-
-      carousel(
-        title: "Upcoming Movies",
-        loading: vm.loadingUpcoming,
-        emptyText: "No upcoming titles right now.",
-        items: vm.upcoming.map {
-          PosterItem(id: String($0.id), title: $0.title, year: $0.year,
-                     poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
-        },
-        onPlay: { _, _ in /* no direct play */ },
-        onInfo: { title, year in openInfo(title, year: year) }
-      )
+  private func resolveAccess() {
+    guard !email.isEmpty else { return }
+    Task {
+      do {
+        var comps = URLComponents(
+          url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+          resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [URLQueryItem(name: "email", value: email)]
+        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+        if (resp as? HTTPURLResponse)?.statusCode == 200,
+           let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+          let status = (obj["status"] as? String) ?? ""
+          let active = (obj["active"] as? Bool) ?? false
+          let trialEnd = (obj["trial_end"] as? Int) ?? 0
+          resolvedStatus = active ? "active" : status
+          resolvedTrialing = (status == "trialing") || trialEnd > 0
+        } else {
+          resolvedStatus = ""
+          resolvedTrialing = false
+        }
+      } catch {
+        resolvedStatus = ""
+        resolvedTrialing = false
+      }
+      accessResolved = true
+      if !hasAccess {
+        vm.playerOpen = false
+        vm.showGettingStarted = true
+      }
     }
-    .padding(.horizontal, 16)
-    .padding(.top, 16)
-    .padding(.bottom, 40)
   }
 
   // MARK: Header
+
   private var header: some View {
     HStack(spacing: 12) {
       Text("s2vids Dashboard")
         .font(.title2)
         .fontWeight(.bold)
-
       Spacer()
 
       if !hasAccess && !isAdmin {
@@ -132,13 +187,17 @@ struct DashboardView: View {
         }
       }
 
-      Button { vm.showAnnouncements = true } label: {
+      Button {
+        vm.showAnnouncements = true
+      } label: {
         Image(systemName: "megaphone")
           .padding(8)
           .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Circle())
           .overlay(alignment: .topTrailing) {
             if vm.hasNewAnnouncements {
-              Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: 4, y: -4)
+              Circle().fill(Color.red)
+                .frame(width: 8, height: 8)
+                .offset(x: 4, y: -4)
             }
           }
       }
@@ -154,7 +213,8 @@ struct DashboardView: View {
     .foregroundColor(.white)
   }
 
-  // MARK: Carousels
+  // MARK: Carousels / Poster
+
   struct PosterItem: Identifiable, Hashable {
     let id: String
     let title: String
@@ -181,7 +241,9 @@ struct DashboardView: View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 12) {
             ForEach(items) { it in
-              VStack(alignment: .leading, spacing: 6) {
+              // Card
+              ZStack {
+                // Poster image
                 AsyncImage(url: URL(string: it.poster)) { phase in
                   switch phase {
                   case .success(let img):
@@ -197,31 +259,36 @@ struct DashboardView: View {
                     Color.gray.frame(width: 140, height: 210)
                   }
                 }
-                .overlay(alignment: .bottomTrailing) {
-                  HStack(spacing: 6) {
-                    Button { onInfo(it.title, it.year) } label: {
-                      Image(systemName: "ellipsis")
-                        .foregroundColor(.white)
-                        .padding(8)
-                        .background(.black.opacity(0.5), in: Circle())
-                    }
-                    // Still show the play button only if the user has access
-                    if hasAccess {
-                      Button { onPlay(it.title, it.year) } label: {
-                        Image(systemName: "play.fill")
-                          .foregroundColor(.white)
-                          .padding(8)
-                          .background(.black.opacity(0.5), in: Circle())
-                      }
-                    }
-                  }
-                  .padding(8)
-                }
 
+                // Center play button
+                Button {
+                  onPlay(it.title, it.year)
+                } label: {
+                  Image(systemName: "play.fill")
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(.black.opacity(0.60), in: Circle())
+                }
+              }
+              // ⬇️ Info button is anchored to the poster card (not the play button)
+              .overlay(alignment: .bottomTrailing) {
+                Button {
+                  onInfo(it.title, it.year)
+                } label: {
+                  Image(systemName: "ellipsis")
+                    .foregroundColor(.white)
+                    .padding(8)
+                    .background(.black.opacity(0.60), in: Circle())
+                }
+                .padding(8)
+              }
+              // Title bottom-left
+              .overlay(alignment: .bottomLeading) {
                 Text(it.title)
                   .font(.caption)
                   .lineLimit(2)
-                  .frame(width: 140, alignment: .leading)
+                  .frame(width: 120, alignment: .leading)
+                  .padding(8)
               }
               .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
             }
@@ -234,38 +301,32 @@ struct DashboardView: View {
   }
 
   private func posterURL(for title: String, year: Int?) -> String {
-    var c = URLComponents(
-      url: AppConfig.apiBase.appendingPathComponent("api/poster"),
-      resolvingAgainstBaseURL: false
-    )!
+    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
+                          resolvingAgainstBaseURL: false)!
     var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
     if let y = year { q.append(.init(name: "y", value: String(y))) }
     c.queryItems = q
     return c.string ?? ""
   }
 
-  // MARK: - Access gate for play
+  // MARK: Actions
 
   private func playOrShowOnboarding(title: String, year: Int?) {
+    // If the user does not have access, DO NOT open the player.
     guard hasAccess else {
-      // Don’t open the player. Show onboarding instead.
+      vm.playerOpen = false
       vm.showGettingStarted = true
       return
     }
     openByTitle(title, year: year)
   }
 
-  // MARK: Actions
-
-  private func openInfo(_ title: String, year: Int?) {
-    let poster = posterURL(for: title, year: year)
-    let text = "\(title)\(year != nil ? " (\(year!))" : "")"
-    let sheet = InfoSheetView(title: text, posterURL: poster) { /* close handled by sheet */ }
-    UIApplication.shared.present(sheet)
+  private func showInfo(_ title: String, year: Int?) {
+    // populate info sheet
+    infoPayload = .init(title: title, year: year, posterURL: posterURL(for: title, year: year))
   }
 
   private func openByTitle(_ title: String, year: Int?) {
-    // As a second line of defense, also gate here.
     guard hasAccess else {
       vm.showGettingStarted = true
       return
@@ -277,6 +338,7 @@ struct DashboardView: View {
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
         let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
         let simp = title.lowercased()
+
         let match = arr.first(where: {
           guard let t = $0["title"] as? String else { return false }
           return t.lowercased() == simp
@@ -284,12 +346,108 @@ struct DashboardView: View {
           guard let t = $0["title"] as? String else { return false }
           return t.lowercased().contains(simp)
         })
+
         guard let m = match,
               let stream = m["streamUrl"] as? String,
               let streamURL = URL(string: stream)
         else { return }
+
         vm.openPlayer(title: title, streamURL: streamURL)
-      } catch { /* ignore */ }
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+// MARK: - Movie Info Sheet (OMDb)
+
+struct MovieInfoSheet: View {
+  let title: String
+  let year: Int?
+  let posterURL: String
+
+  @State private var plot: String = "Loading info..."
+  @State private var rating: String = ""
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationView {
+      ScrollView {
+        VStack(spacing: 16) {
+          AsyncImage(url: URL(string: posterURL)) { img in
+            img.resizable().scaledToFit()
+          } placeholder: {
+            Color.gray.opacity(0.2)
+          }
+          .frame(height: 280)
+
+          Text("\(title)\(year != nil ? " (\(year!))" : "")")
+            .font(.headline)
+            .multilineTextAlignment(.center)
+
+          if !rating.isEmpty {
+            Text("⭐️ IMDb \(rating)")
+              .font(.subheadline)
+              .foregroundColor(.yellow)
+          }
+
+          Text(plot)
+            .font(.body)
+            .multilineTextAlignment(.leading)
+            .padding(.top, 4)
+
+          // IMDb link
+          if let imdbURL = imdbURL {
+            Link("View on IMDb", destination: imdbURL)
+              .buttonStyle(.bordered)
+              .padding(.top, 6)
+          }
+
+          Spacer()
+        }
+        .padding()
+      }
+      .navigationTitle("Info")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button("Close") { dismiss() }
+        }
+      }
+      .task { await loadInfo() }
+    }
+  }
+
+  private var imdbURL: URL? {
+    if let id = cachedImdbID { return URL(string: "https://www.imdb.com/title/\(id)/") }
+    // fallback search
+    return URL(string: "https://www.imdb.com/find?q=\(title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")
+  }
+
+  @State private var cachedImdbID: String?
+
+  private func loadInfo() async {
+    guard let base = URL(string: "https://www.omdbapi.com/") else { return }
+    var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+    components.queryItems = [
+      .init(name: "apikey", value: AppConfig.omdbKey), // <- must exist in AppConfig+Keys.swift
+      .init(name: "t", value: title),
+      .init(name: "plot", value: "full")
+    ]
+    if let y = year { components.queryItems?.append(.init(name: "y", value: String(y))) }
+
+    do {
+      let (data, _) = try await URLSession.shared.data(from: components.url!)
+      if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        plot = (obj["Plot"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "No plot available."
+        rating = obj["imdbRating"] as? String ?? ""
+        cachedImdbID = obj["imdbID"] as? String
+      } else {
+        plot = "Unable to fetch movie details."
+      }
+    } catch {
+      plot = "Failed to load movie information."
     }
   }
 }
@@ -303,58 +461,32 @@ struct GettingStartedSheet: View {
   var body: some View {
     NavigationView {
       VStack(alignment: .leading, spacing: 12) {
-        // Attention banner (matches web)
         if showNoSubNotice {
-          VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-              Image(systemName: "info.circle").foregroundColor(.red.opacity(0.9))
-              Text("Attention").font(.headline).fontWeight(.heavy)
-            }
-            Text("You currently have **no active subscription**.")
-          }
-          .padding(12)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .background(
-            LinearGradient(
-              colors: [Color.red.opacity(0.35), Color.orange.opacity(0.25)],
-              startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-          )
-          .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.red.opacity(0.4)))
-          .clipShape(RoundedRectangle(cornerRadius: 12))
+          Text("You currently have **no active subscription**.")
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
         }
-
-        HStack(spacing: 8) {
-          Image(systemName: "questionmark.circle").foregroundColor(.indigo)
-          Text("Getting started").font(.headline).fontWeight(.heavy)
+        Text("Getting started").font(.headline).fontWeight(.bold)
+        Group {
+          Text("1. Select **Subscribe**.")
+          Text("2. After subscribing, return here and refresh the page.")
+          Text("3. Create your **Jellyfin** account & set a password.")
+          Text("4. Open the menu (top right) and **Launch Jellyfin**.")
+          Text("5. Sign in with your email + password.")
         }
-
-        // Steps — same copy as your web modal
-        VStack(alignment: .leading, spacing: 8) {
-          Text("**Welcome,** To start enjoying all of the premium benefits, follow the instructions below.")
-          Text("**1.** Select **Subscribe**.")
-          Text("**2.** After subscribing, return here and refresh the page.")
-          Text("**3.** Select **Create Jellyfin Account** and set a password.")
-          Text("**4.** Open the dropdown menu (top right corner).")
-          Text("**5.** Select **Launch Jellyfin**.")
-          Text("**6.** Sign in using your email + the password you set.")
-        }
-        .font(.callout)
         .foregroundColor(.secondary)
 
         Link("Subscribe",
              destination: URL(string: "https://buy.stripe.com/aFa14o8B758CeTnfrjfw406")!)
           .buttonStyle(.borderedProminent)
-          .tint(.green)
 
         Spacer()
       }
       .padding()
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .navigationBarTrailing) {
-          Button("Close", action: onClose)
-        }
+        ToolbarItem(placement: .navigationBarTrailing) { Button("Close", action: onClose) }
       }
     }
   }
@@ -414,57 +546,24 @@ struct AnnouncementsSheet: View {
   }
 }
 
-struct InfoSheetView: View {
-  let title: String
-  let posterURL: String
-  let onClose: () -> Void
-
-  var body: some View {
-    NavigationView {
-      VStack(spacing: 16) {
-        AsyncImage(url: URL(string: posterURL)) { img in
-          img.resizable().scaledToFit()
-        } placeholder: {
-          Color.gray.opacity(0.2)
-        }
-        .frame(height: 280)
-        Text(title).font(.headline).multilineTextAlignment(.center)
-        Spacer()
-      }
-      .padding()
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .navigationBarTrailing) {
-          Button("Close", action: onClose)
-        }
-      }
-    }
-  }
-}
-
-// MARK: - Presenter helper (so UIApplication.present exists)
-
-#if os(iOS)
-extension UIApplication {
-  func present<V: View>(_ view: V) {
-    guard let scene = connectedScenes.first as? UIWindowScene,
-          let root = scene.windows.first?.rootViewController else { return }
-    let host = UIHostingController(rootView: view)
-    host.modalPresentationStyle = .formSheet
-    root.present(host, animated: true)
-  }
-}
-#endif
-
 // MARK: - Detents Compatibility Helpers (iOS 16+ only; safe on iOS 15)
 
 private struct DetentsCompatMediumLarge: ViewModifier {
   func body(content: Content) -> some View {
-    if #available(iOS 16.0, *) { content.presentationDetents([.medium, .large]) } else { content }
+    if #available(iOS 16.0, *) {
+      content.presentationDetents([.medium, .large])
+    } else {
+      content
+    }
   }
 }
+
 private struct DetentsCompatLarge: ViewModifier {
   func body(content: Content) -> some View {
-    if #available(iOS 16.0, *) { content.presentationDetents([.large]) } else { content }
+    if #available(iOS 16.0, *) {
+      content.presentationDetents([.large])
+    } else {
+      content
+    }
   }
 }
