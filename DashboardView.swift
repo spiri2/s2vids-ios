@@ -573,7 +573,7 @@ private struct DetentsCompatLarge: ViewModifier {
 
 // MARK: - User Dropdown (Overlay + Stripe gate + Admin visibility)
 
-private struct UserMenuButton: View {
+struct UserMenuButton: View {
   let email: String
   let isAdmin: Bool
   let onRequireAccess: () -> Void
