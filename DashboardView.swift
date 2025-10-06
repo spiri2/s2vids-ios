@@ -209,8 +209,18 @@ struct DashboardView: View {
           .padding(8)
           .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Circle())
       }
+
+      // User dropdown (overlay; no layout shift)
+      UserMenuButton(
+        email: email,
+        isAdmin: isAdmin,
+        onRequireAccess: { vm.showGettingStarted = true },
+        onLogout: { /* hook up to your logout */ }
+      )
     }
     .foregroundColor(.white)
+    // ⬇️ Keep the whole header above the scrolled content, so the menu panel sits on top
+    .zIndex(10_000)
   }
 
   // MARK: Carousels / Poster
@@ -241,9 +251,7 @@ struct DashboardView: View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 12) {
             ForEach(items) { it in
-              // Card
               ZStack {
-                // Poster image
                 AsyncImage(url: URL(string: it.poster)) { phase in
                   switch phase {
                   case .success(let img):
@@ -270,7 +278,7 @@ struct DashboardView: View {
                     .background(.black.opacity(0.60), in: Circle())
                 }
               }
-              // ⬇️ Info button is anchored to the poster card (not the play button)
+              // Bottom-right info button
               .overlay(alignment: .bottomTrailing) {
                 Button {
                   onInfo(it.title, it.year)
@@ -312,7 +320,6 @@ struct DashboardView: View {
   // MARK: Actions
 
   private func playOrShowOnboarding(title: String, year: Int?) {
-    // If the user does not have access, DO NOT open the player.
     guard hasAccess else {
       vm.playerOpen = false
       vm.showGettingStarted = true
@@ -322,7 +329,6 @@ struct DashboardView: View {
   }
 
   private func showInfo(_ title: String, year: Int?) {
-    // populate info sheet
     infoPayload = .init(title: title, year: year, posterURL: posterURL(for: title, year: year))
   }
 
@@ -353,9 +359,7 @@ struct DashboardView: View {
         else { return }
 
         vm.openPlayer(title: title, streamURL: streamURL)
-      } catch {
-        // ignore
-      }
+      } catch { }
     }
   }
 }
@@ -397,7 +401,6 @@ struct MovieInfoSheet: View {
             .multilineTextAlignment(.leading)
             .padding(.top, 4)
 
-          // IMDb link
           if let imdbURL = imdbURL {
             Link("View on IMDb", destination: imdbURL)
               .buttonStyle(.bordered)
@@ -421,7 +424,6 @@ struct MovieInfoSheet: View {
 
   private var imdbURL: URL? {
     if let id = cachedImdbID { return URL(string: "https://www.imdb.com/title/\(id)/") }
-    // fallback search
     return URL(string: "https://www.imdb.com/find?q=\(title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")
   }
 
@@ -431,7 +433,7 @@ struct MovieInfoSheet: View {
     guard let base = URL(string: "https://www.omdbapi.com/") else { return }
     var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
     components.queryItems = [
-      .init(name: "apikey", value: AppConfig.omdbKey), // <- must exist in AppConfig+Keys.swift
+      .init(name: "apikey", value: AppConfig.omdbKey), // must exist in AppConfig+Keys.swift
       .init(name: "t", value: title),
       .init(name: "plot", value: "full")
     ]
@@ -564,6 +566,165 @@ private struct DetentsCompatLarge: ViewModifier {
       content.presentationDetents([.large])
     } else {
       content
+    }
+  }
+}
+
+// MARK: - User Dropdown (Overlay + Stripe gate + Admin visibility)
+
+private struct UserMenuButton: View {
+  let email: String
+  let isAdmin: Bool
+  let onRequireAccess: () -> Void
+  let onLogout: () -> Void
+
+  @State private var open = false
+  @State private var hasAccess = false
+  @State private var loading = false
+  @State private var errorText: String?
+
+  @Environment(\.openURL) private var openURL
+
+  var body: some View {
+    Button {
+      toggleOpen()
+    } label: {
+      Image(systemName: "person.circle.fill")
+        .font(.system(size: 26, weight: .regular))
+        .foregroundColor(.white)
+        .frame(width: 32, height: 32)
+    }
+    .buttonStyle(.plain)
+    // The menu is drawn here; overlays don't affect layout.
+    .overlay(alignment: .topTrailing) {
+      if open {
+        VStack(spacing: 0) {
+          HStack {
+            Text(email.isEmpty ? "Signed in" : email)
+              .font(.footnote)
+              .foregroundColor(.gray)
+              .lineLimit(1)
+              .truncationMode(.tail)
+            Spacer()
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .background(Color.black.opacity(0.25))
+
+          Divider().background(Color.gray.opacity(0.4))
+
+          VStack(spacing: 0) {
+            Row(icon: "rectangle.grid.2x2", title: "Dashboard") { open = false }
+            Row(icon: "safari", title: "Discover") { open = false }
+            Row(icon: "film", title: "Movies") { open = false }
+            Row(icon: "tv", title: "TV Shows") { open = false }
+            Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
+            Row(icon: "calendar", title: "TV Show Calendar") { open = false }
+
+            Row(icon: "arrow.up.right.square", title: "Launch Jellyfin") {
+              goOrWarn { openURL(URL(string: "https://atlas.s2vids.org/")!) }
+            }
+            Row(icon: "arrow.up.right.square", title: "Request Media") {
+              goOrWarn { openURL(URL(string: "https://req.s2vids.org/")!) }
+            }
+            Row(icon: "arrow.up.right.square", title: "Join Discord") {
+              openURL(URL(string: "https://discord.gg/cw6rQzx5Bx")!)
+            }
+            Row(icon: "gear", title: "Settings") { open = false }
+
+            if isAdmin {
+              Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) { open = false }
+            }
+
+            Row(icon: "arrow.backward.square", title: "Log Out", tint: .red) {
+              open = false
+              onLogout()
+            }
+          }
+
+          if loading || errorText != nil {
+            Divider().background(Color.gray.opacity(0.4))
+            HStack(spacing: 8) {
+              if loading { ProgressView().scaleEffect(0.6) }
+              Text(loading ? "Checking subscription…" : (errorText ?? ""))
+                .font(.caption)
+                .foregroundColor(.gray)
+              Spacer()
+            }
+            .padding(10)
+          }
+        }
+        .frame(width: 230)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0.09, green: 0.11, blue: 0.17)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.35)))
+        .offset(y: 36)                       // float below the avatar
+        .zIndex(100_000)                     // ⬅️ ensure above everything
+        .transition(.scale(scale: 0.95).combined(with: .opacity))
+      }
+    }
+  }
+
+  private func Row(icon: String, title: String, tint: Color? = nil, action: @escaping () -> Void) -> some View {
+    Button(action: { action() }) {
+      HStack(spacing: 10) {
+        Image(systemName: icon).frame(width: 16)
+        Text(title).font(.subheadline)
+        Spacer()
+      }
+      .foregroundColor(tint ?? .white)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func toggleOpen() {
+    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+      open.toggle()
+    }
+    if open { Task { await checkStripeAccess() } }
+  }
+
+  private func goOrWarn(_ go: () -> Void) {
+    if hasAccess || isAdmin {
+      go()
+    } else {
+      onRequireAccess()
+    }
+  }
+
+  private func statusAllowsAccess(_ status: String) -> Bool {
+    let s = status.lowercased()
+    return s == "active" || s == "trialing"
+  }
+
+  private func checkStripeAccess() async {
+    guard !email.isEmpty else { hasAccess = false; return }
+    loading = true
+    errorText = nil
+    defer { loading = false }
+
+    do {
+      var comps = URLComponents(
+        url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+        resolvingAgainstBaseURL: false
+      )!
+      comps.queryItems = [ URLQueryItem(name: "email", value: email) ]
+
+      let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+      guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+        hasAccess = false
+        errorText = "Unable to check subscription."
+        return
+      }
+      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+      let status = (obj?["status"] as? String) ?? ""
+      let activeFlag = (obj?["active"] as? Bool) ?? false
+      hasAccess = activeFlag || statusAllowsAccess(status)
+    } catch {
+      hasAccess = false
+      errorText = "Network error."
     }
   }
 }
