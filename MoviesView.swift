@@ -47,6 +47,8 @@ struct MoviesView: View {
   let subscriptionStatus: String
   let isTrialing: Bool
 
+  @Environment(\.dismiss) private var dismiss   // used to go back to Dashboard
+
   // Access resolution (same approach as DashboardView)
   @State private var resolvedStatus: String = ""
   @State private var resolvedTrialing: Bool = false
@@ -81,9 +83,13 @@ struct MoviesView: View {
   // Getting started (gate)
   @State private var showGettingStarted = false
 
+  // Settings
+  @State private var showSettings = false     // will be shown full-screen
+
   // Favorites (persisted per email)
   private var favsKey: String { "s2vids:favorites:\(email.isEmpty ? "anon" : email)" }
   @State private var favorites: Set<String> = []
+  @State private var showFavoritesOnly = false
 
   // MARK: Access helpers
 
@@ -152,6 +158,10 @@ struct MoviesView: View {
                      posterURL: posterURL(for: infoTitle, year: nil)?.absoluteString ?? "")
         .modifier(MoviesDetentsCompatMediumLarge())
     }
+    // Settings — FULL SCREEN now
+    .fullScreenCover(isPresented: $showSettings) {
+      SettingsView(email: email, isAdmin: effectiveIsAdmin)
+    }
     // Player
     .fullScreenCover(isPresented: $playerOpen, onDismiss: stopObserving) {
       ZStack(alignment: .topTrailing) {
@@ -177,16 +187,34 @@ struct MoviesView: View {
       Text("Movies")
         .font(.system(size: 22, weight: .bold))
         .foregroundColor(.white)
+
       Spacer()
+
+      // Favorites toggle — placed LEFT of dropdown/menu button
+      Button {
+        showFavoritesOnly.toggle()
+        page = 1
+      } label: {
+        Image(systemName: showFavoritesOnly ? "heart.circle.fill" : "heart.circle")
+          .font(.system(size: 22, weight: .semibold))
+          .foregroundColor(showFavoritesOnly ? .red : .white)
+      }
+
       UserMenuButton(
         email: email,
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { showGettingStarted = true },
-        onLogout: { /* hook logout */ },
-        onOpenSettings: { /* push settings from parent */ },
-        onOpenMovies: { /* already on Movies – no-op */ }   // ✅ added
+        onLogout: {
+          // Minimal sign-out: clear user-local data & notify app
+          UserDefaults.standard.removeObject(forKey: "s2vids:favorites:\(email.isEmpty ? "anon" : email)")
+          UserDefaults.standard.removeObject(forKey: "s2vids:progress:\(email.isEmpty ? "anon" : email)")
+          NotificationCenter.default.post(name: .init("S2VidsDidLogout"), object: nil)
+        },
+        onOpenSettings: { showSettings = true }, // full-screen
+        onOpenMovies: { dismiss() }              // ✅ use expected label; Dashboard should call this inside the menu to go home
       )
     }
+    .zIndex(10_000) // keep menu above posters
   }
 
   private var searchBar: some View {
@@ -253,11 +281,11 @@ struct MoviesView: View {
     }
   }
 
-  // MARK: All Movies
+  // MARK: All Movies (3 per row + real posters + favorites filter)
 
   private var allMoviesSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      pillHeader(text: "All Movies", tint: .purple)
+      pillHeader(text: showFavoritesOnly ? "Favorites" : "All Movies", tint: showFavoritesOnly ? .red : .purple)
 
       Group {
         if loadingAll || (!hasAccess && loadingFree) {
@@ -278,75 +306,99 @@ struct MoviesView: View {
           }
 
           if filtered.isEmpty {
-            Text("No movies found.").foregroundColor(.white.opacity(0.85))
+            Text(showFavoritesOnly ? "No favorites yet." : "No movies found.")
+              .foregroundColor(.white.opacity(0.85))
           } else {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 12) {
-              ForEach(paged) { m in
-                VStack(alignment: .leading, spacing: 6) {
-                  ZStack {
-                    AsyncImage(url: posterURL(for: m.title, year: m.year, explicit: m.posterUrl)) { phase in
-                      switch phase {
-                      case .success(let img):
-                        img.resizable().aspectRatio(2/3, contentMode: .fill)
-                      case .failure(_):
-                        Color.gray.opacity(0.2)
-                      case .empty:
-                        Color.black.opacity(0.2)
-                      @unknown default:
-                        Color.gray.opacity(0.2)
+            GeometryReader { proxy in
+              let totalSpacing: CGFloat = 12 * 2
+              let cardW = (proxy.size.width - totalSpacing) / 3.0
+              let cardH = cardW * 1.5
+
+              LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3),
+                spacing: 12
+              ) {
+                ForEach(paged) { m in
+                  VStack(alignment: .leading, spacing: 6) {
+                    ZStack {
+                      let url = posterURL(for: m.title, year: m.year, explicit: m.posterUrl)
+                      AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img):
+                          img.resizable().scaledToFill().frame(width: cardW, height: cardH).clipped()
+                        case .failure(_):
+                          Color.gray.opacity(0.25).frame(width: cardW, height: cardH)
+                            .overlay(Image(systemName: "film").font(.title2).foregroundColor(.white.opacity(0.6)))
+                        case .empty:
+                          Color.black.opacity(0.2).frame(width: cardW, height: cardH)
+                        @unknown default:
+                          Color.gray.opacity(0.25).frame(width: cardW, height: cardH)
+                        }
+                      }
+                      .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                      Button {
+                        if !hasAccess && !freeMonthly.contains(where: { $0.id == m.id }) {
+                          showGettingStarted = true
+                          return
+                        }
+                        openPlayer(for: m)
+                      } label: {
+                        Image(systemName: "play.fill")
+                          .foregroundColor(.white)
+                          .padding(10)
+                          .background(.black.opacity(0.6), in: Circle())
                       }
                     }
-                    .frame(height: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                    // Play center
-                    Button {
-                      if !hasAccess && !freeMonthly.contains(where: { $0.id == m.id }) {
-                        showGettingStarted = true
-                        return
+                    .overlay(alignment: .topLeading) {
+                      Button {
+                        toggleFavorite(m.id)
+                      } label: {
+                        Image(systemName: "heart.fill")
+                          .foregroundColor(favorites.contains(m.id) ? .red : .white)
+                          .font(.system(size: 12))
+                          .padding(8)
+                          .background(.black.opacity(0.6), in: Circle())
                       }
-                      openPlayer(for: m)
-                    } label: {
-                      Image(systemName: "play.fill")
-                        .foregroundColor(.white)
-                        .padding(10)
-                        .background(.black.opacity(0.6), in: Circle())
+                      .padding(6)
                     }
-                  }
-                  .overlay(alignment: .topLeading) {
-                    Button {
-                      toggleFavorite(m.id)
-                    } label: {
-                      Image(systemName: "heart.fill")
-                        .foregroundColor(favorites.contains(m.id) ? .red : .white)
-                        .font(.system(size: 12))
-                        .padding(8)
-                        .background(.black.opacity(0.6), in: Circle())
+                    .overlay(alignment: .topTrailing) {
+                      Button {
+                        infoTitle = m.title; infoOpen = true
+                      } label: {
+                        Image(systemName: "ellipsis")
+                          .foregroundColor(.white)
+                          .padding(8)
+                          .background(.black.opacity(0.6), in: Circle())
+                      }
+                      .padding(6)
                     }
-                    .padding(6)
-                  }
-                  .overlay(alignment: .topTrailing) {
-                    Button {
-                      infoTitle = m.title; infoOpen = true
-                    } label: {
-                      Image(systemName: "ellipsis")
-                        .foregroundColor(.white)
-                        .padding(8)
-                        .background(.black.opacity(0.6), in: Circle())
-                    }
-                    .padding(6)
-                  }
 
-                  Text(m.title)
-                    .font(.system(size: 13))
-                    .lineLimit(2)
+                    Text(m.title)
+                      .font(.system(size: 13))
+                      .lineLimit(2)
+                      .frame(width: cardW - 12, alignment: .leading)
+                  }
                 }
               }
+              .frame(width: proxy.size.width, height: gridHeight(itemCount: paged.count, cardH: cardH))
             }
+            .frame(height: dynamicGridOuterHeight(itemCount: paged.count))
           }
         }
       }
     }
+  }
+
+  /// Height helpers so GeometryReader sizes correctly.
+  private func rows(for count: Int) -> Int { max(1, Int(ceil(Double(count) / 3.0))) }
+  private func gridHeight(itemCount: Int, cardH: CGFloat) -> CGFloat {
+    let r = rows(for: itemCount)
+    return CGFloat(r) * (cardH + 34 + 12) // card + title + spacing
+  }
+  private func dynamicGridOuterHeight(itemCount: Int) -> CGFloat {
+    let r = rows(for: itemCount)
+    return CGFloat(r) * 260
   }
 
   // MARK: Sections + Components
@@ -377,20 +429,21 @@ struct MoviesView: View {
     onPlay: @escaping () -> Void,
     onInfo: @escaping () -> Void
   ) -> some View {
-    ZStack {
+    let w: CGFloat = 140
+    let h: CGFloat = 210
+    return ZStack {
       AsyncImage(url: URL(string: poster)) { phase in
         switch phase {
         case .success(let img):
-          img.resizable().aspectRatio(2/3, contentMode: .fill)
+          img.resizable().scaledToFill().frame(width: w, height: h).clipped()
         case .failure(_):
-          Color.gray.opacity(0.2)
+          Color.gray.opacity(0.25).frame(width: w, height: h)
         case .empty:
-          Color.black.opacity(0.2)
+          Color.black.opacity(0.2).frame(width: w, height: h)
         @unknown default:
-          Color.gray.opacity(0.2)
+          Color.gray.opacity(0.25).frame(width: w, height: h)
         }
       }
-      .frame(width: 140, height: 210)
       .clipShape(RoundedRectangle(cornerRadius: 10))
 
       Button(action: onPlay) {
@@ -423,7 +476,7 @@ struct MoviesView: View {
       Text(title)
         .font(.caption)
         .lineLimit(2)
-        .frame(width: 120, alignment: .leading)
+        .frame(width: w - 20, alignment: .leading)
         .padding(8)
     }
     .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
@@ -438,10 +491,19 @@ struct MoviesView: View {
     }
   }
 
+  private var displayList: [Movie] {
+    if showFavoritesOnly {
+      let favs = favorites
+      return baseList.filter { favs.contains($0.id) }
+    } else {
+      return baseList
+    }
+  }
+
   private var filtered: [Movie] {
     let q = canonical(query)
-    guard !q.isEmpty else { return baseList }
-    return baseList.filter { canonical($0.title).contains(q) }
+    guard !q.isEmpty else { return displayList }
+    return displayList.filter { canonical($0.title).contains(q) }
   }
 
   private var paged: [Movie] {
@@ -471,16 +533,16 @@ struct MoviesView: View {
           ForEach(continueWatchingItems) { m in
             let prog = progress[m.id]
             let pct = (prog?.duration ?? 0) > 0 ? (prog!.position / prog!.duration) : 0
+            let w: CGFloat = 140, h: CGFloat = 210
             ZStack {
               AsyncImage(url: posterURL(for: m.title, year: m.year, explicit: m.posterUrl)) { phase in
                 switch phase {
-                case .success(let img): img.resizable().aspectRatio(2/3, contentMode: .fill)
-                case .failure(_): Color.gray.opacity(0.2)
-                case .empty: Color.black.opacity(0.2)
-                @unknown default: Color.gray.opacity(0.2)
+                case .success(let img): img.resizable().scaledToFill().frame(width: w, height: h).clipped()
+                case .failure(_): Color.gray.opacity(0.25).frame(width: w, height: h)
+                case .empty: Color.black.opacity(0.2).frame(width: w, height: h)
+                @unknown default: Color.gray.opacity(0.25).frame(width: w, height: h)
                 }
               }
-              .frame(width: 140, height: 210)
               .clipShape(RoundedRectangle(cornerRadius: 10))
 
               Button { openPlayer(for: m, resumeAt: prog?.position ?? 0) } label: {
@@ -494,18 +556,17 @@ struct MoviesView: View {
               Text(m.title)
                 .font(.caption)
                 .lineLimit(2)
-                .frame(width: 120, alignment: .leading)
+                .frame(width: w - 20, alignment: .leading)
                 .padding(8)
             }
             .overlay(alignment: .bottom) {
               ZStack(alignment: .leading) {
                 Rectangle().fill(Color.white.opacity(0.12)).frame(height: 6)
-                Rectangle().fill(Color.green).frame(width: CGFloat(pct) * 140, height: 6)
+                Rectangle().fill(Color.green).frame(width: CGFloat(pct) * w, height: 6)
               }
             }
             .overlay(alignment: .topTrailing) {
               Button {
-                // mark watched
                 progress[m.id] = nil
                 saveProgress()
               } label: {
@@ -568,7 +629,6 @@ struct MoviesView: View {
     playerOpen = true
 
     if resumeAt > 1 {
-      // seek after metadata
       NotificationCenter.default.addObserver(forName: .AVPlayerItemNewAccessLogEntry, object: item, queue: .main) { _ in
         let seconds = CMTimeMakeWithSeconds(resumeAt, preferredTimescale: 600)
         p.seek(to: seconds, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
@@ -741,14 +801,20 @@ struct MoviesView: View {
     } catch { }
   }
 
+  /// Prefer an explicit poster only if it's an absolute http(s) URL; otherwise use /api/poster.
   private func posterURL(for title: String, year: Int?, fallback: String? = nil, explicit: String? = nil) -> URL? {
-    if let explicit = explicit, let u = URL(string: explicit) { return u }
+    if let explicit = explicit,
+       let u = URL(string: explicit),
+       let scheme = u.scheme,
+       (scheme == "http" || scheme == "https") {
+      return u
+    }
     var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
                           resolvingAgainstBaseURL: false)!
     var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
     if let y = year { q.append(.init(name: "y", value: String(y))) }
     c.queryItems = q
-    if let built = c.string, let u = URL(string: built) { return u }
+    if let u = c.url { return u }
     if let f = fallback, let u = URL(string: f) { return u }
     return nil
   }
