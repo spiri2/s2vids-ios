@@ -183,7 +183,8 @@ struct MoviesView: View {
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { showGettingStarted = true },
         onLogout: { /* hook logout */ },
-        onOpenSettings: { /* push settings from parent */ }
+        onOpenSettings: { /* push settings from parent */ },
+        onOpenMovies: { /* already on Movies – no-op */ }   // ✅ added
       )
     }
   }
