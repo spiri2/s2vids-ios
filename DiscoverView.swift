@@ -16,7 +16,7 @@ private struct DiscoverItem: Identifiable, Decodable, Hashable {
   let firstAirDate: String?
   let posterPath: String?
   let mediaType: String?      // "movie" | "tv"
-  // server sometimes uses snake_case; make decoding forgiving
+
   enum CodingKeys: String, CodingKey {
     case id
     case title, name
@@ -27,6 +27,7 @@ private struct DiscoverItem: Identifiable, Decodable, Hashable {
     // snake_case fallbacks:
     case release_date, first_air_date, poster_path, media_type
   }
+
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     id = try c.decode(Int.self, forKey: .id)
@@ -75,7 +76,7 @@ struct DiscoverView: View {
 
   @Environment(\.dismiss) private var dismiss
 
-  // Resolved access (same idea as MoviesView)
+  // Access State
   @State private var resolvedStatus = ""
   @State private var resolvedTrialing = false
   @State private var accessResolved = false
@@ -85,7 +86,7 @@ struct DiscoverView: View {
   private var effectiveIsAdmin: Bool { isAdmin || email.lowercased() == "mspiri2@outlook.com" }
   private var hasAccess: Bool { effectiveTrialing || effectiveStatus.lowercased() == "active" || effectiveIsAdmin }
 
-  // UI state
+  // UI State
   @State private var query = ""
   @State private var page = 1
   @State private var totalPages = 1
@@ -94,11 +95,11 @@ struct DiscoverView: View {
   @State private var loading = false
   @State private var errText: String? = nil
 
-  // Requests state
+  // Requests State
   @State private var requestedIds: Set<Int> = []
   @State private var loadingId: Int? = nil
 
-  // Library (to show Watch if already ingested)
+  // Library
   @State private var library: [Movie] = []
 
   // Sheets / Player
@@ -111,13 +112,12 @@ struct DiscoverView: View {
   @State private var player: AVPlayer? = nil
   @State private var currentStreamURL: URL? = nil
 
-  // Settings from dropdown (full-screen)
+  // Settings
   @State private var showSettings = false
 
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
-
       ScrollView {
         VStack(spacing: 16) {
           header
@@ -146,10 +146,12 @@ struct DiscoverView: View {
     }
     // Info
     .sheet(isPresented: $infoOpen) {
-      MovieInfoSheet(title: infoTitle, year: infoYear, posterURL: posterURL(forTitle: infoTitle, year: infoYear)?.absoluteString ?? "")
-        .modifier(MoviesDetentsCompatMediumLarge())
+      MovieInfoSheet(title: infoTitle,
+                     year: infoYear,
+                     posterURL: posterURL(forTitle: infoTitle, year: infoYear)?.absoluteString ?? "")
+      .modifier(MoviesDetentsCompatMediumLarge())
     }
-    // Settings (full-screen)
+    // Settings
     .fullScreenCover(isPresented: $showSettings) {
       SettingsView(email: email, isAdmin: effectiveIsAdmin)
     }
@@ -181,24 +183,24 @@ struct DiscoverView: View {
         .foregroundColor(.white)
       Spacer()
 
-      // Favorites icon not needed here; leave space for future filters
-
       UserMenuButton(
         email: email,
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { showGettingStarted = true },
         onLogout: {
-          // basic sign-out: clear a couple of local keys and post a logout note
           UserDefaults.standard.removeObject(forKey: "s2vids:favorites:\(email.isEmpty ? "anon" : email)")
           UserDefaults.standard.removeObject(forKey: "s2vids:progress:\(email.isEmpty ? "anon" : email)")
           NotificationCenter.default.post(name: Notification.Name("S2VidsDidLogout"), object: nil)
         },
         onOpenSettings: { showSettings = true },
-        onOpenMovies: { dismiss() } // treat “Dashboard” as back to previous
+        onOpenMovies: { dismiss() },
+        onOpenDiscover: { } // ✅ added missing parameter
       )
     }
     .zIndex(10_000)
   }
+
+  // MARK: Search Bar
 
   private var searchBar: some View {
     HStack(spacing: 8) {
@@ -207,7 +209,8 @@ struct DiscoverView: View {
         .disableAutocorrection(true)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
+        .background(RoundedRectangle(cornerRadius: 10)
+        .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
         .foregroundColor(.white)
         .onSubmit {
           page = 1
@@ -220,7 +223,7 @@ struct DiscoverView: View {
     }
   }
 
-  // MARK: Pagination bars
+  // MARK: Pagination
 
   private var paginationTop: some View { paginationBar }
   private var paginationBottom: some View { paginationBar }
@@ -237,7 +240,8 @@ struct DiscoverView: View {
 
       Spacer()
       Text(loading ? "Loading…" : "Page \(page) of \(totalPages) • \(totalResults) results")
-        .font(.caption).foregroundColor(.white.opacity(0.8))
+        .font(.caption)
+        .foregroundColor(.white.opacity(0.8))
       Spacer()
 
       Button("Next") { guard page < totalPages else { return }; page += 1; fetchPage() }
@@ -291,13 +295,10 @@ struct DiscoverView: View {
                   }
                   .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                  // Info (top-right)
                   VStack {
                     HStack {
                       Spacer()
-                      Button {
-                        openInfo(it)
-                      } label: {
+                      Button { openInfo(it) } label: {
                         Image(systemName: "ellipsis")
                           .foregroundColor(.white)
                           .padding(8)
@@ -315,9 +316,7 @@ struct DiscoverView: View {
                   .frame(width: cardW - 6, alignment: .leading)
 
                 if canWatch {
-                  Button {
-                    openPlayer(title: pureTitle, urlString: maybeStream!)
-                  } label: {
+                  Button { openPlayer(title: pureTitle, urlString: maybeStream!) } label: {
                     Text("Watch").frame(maxWidth: .infinity)
                   }
                   .buttonStyle(.borderedProminent)
@@ -346,7 +345,7 @@ struct DiscoverView: View {
     return CGFloat(rows) * (cardH + 40) + CGFloat(max(0, rows - 1)) * 12
   }
 
-  // MARK: Info / Player helpers
+  // MARK: Info / Player Helpers
 
   private func openInfo(_ it: DiscoverItem) {
     let y = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
@@ -381,12 +380,12 @@ struct DiscoverView: View {
                                   resolvingAgainstBaseURL: false)!
         comps.queryItems = [ .init(name: "page", value: String(page)) ]
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !q.isEmpty { comps.queryItems?.append(.init(name: "query", value: q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed))) }
+        if !q.isEmpty {
+          comps.queryItems?.append(.init(name: "query", value: q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)))
+        }
 
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-          throw URLError(.badServerResponse)
-        }
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         let decoded = try JSONDecoder().decode(DiscoverResponse.self, from: data)
         items = decoded.results ?? []
         totalPages = max(1, decoded.totalPages ?? 1)
@@ -422,11 +421,11 @@ struct DiscoverView: View {
       }
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
       requestedIds.insert(it.id)
-    } catch { /* ignore */ }
+    } catch { }
   }
 
   private func loadRequestedIds() {
-    Task.detached {
+    Task {
       var acc = Set<Int>()
       let pageSize = 100
       for page in 0..<200 {
@@ -441,7 +440,6 @@ struct DiscoverView: View {
           let (data, resp) = try await URLSession.shared.data(from: comps.url!)
           guard (resp as? HTTPURLResponse)?.statusCode == 200 else { break }
 
-          // Payload can be { results: [...] } OR [...]
           let any = try JSONSerialization.jsonObject(with: data)
           var arr: [[String: Any]] = []
           if let dict = any as? [String: Any], let r = dict["results"] as? [[String: Any]] {
@@ -459,7 +457,7 @@ struct DiscoverView: View {
           if arr.count < pageSize { break }
         } catch { break }
       }
-      await MainActor.run { self.requestedIds = acc }
+      self.requestedIds = acc
     }
   }
 
@@ -485,94 +483,93 @@ struct DiscoverView: View {
         var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
                                   resolvingAgainstBaseURL: false)!
         comps.queryItems = [ .init(name: "email", value: email) ]
-        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
-        let status = (s?.status ?? "")
-        let active = (s?.active ?? false)
-        let trialEnd = (s?.trial_end ?? 0)
-        resolvedStatus = active ? "active" : status
-        resolvedTrialing = (status == "trialing") || trialEnd > 0
-      } catch { }
+          let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+          guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+          let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
+          let status = (s?.status ?? "")
+          let active = (s?.active ?? false)
+          let trialEnd = (s?.trial_end ?? 0)
+          resolvedStatus = active ? "active" : status
+          resolvedTrialing = (status == "trialing") || trialEnd > 0
+        } catch { }
+      }
     }
-  }
 
-  // MARK: Helpers
+    // MARK: - Helpers
 
-  private func streamFor(_ it: DiscoverItem) -> String? {
-    let target = canonical((it.title ?? it.name ?? ""))
-    guard !target.isEmpty else { return nil }
-    let wantYear: Int? = {
-      if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+    private func streamFor(_ it: DiscoverItem) -> String? {
+      let target = canonical((it.title ?? it.name ?? ""))
+      guard !target.isEmpty else { return nil }
+      let wantYear: Int? = {
+        if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+        if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+        return nil
+      }()
+
+      if let y = wantYear,
+         let exactY = library.first(where: { canonical($0.title) == target && ($0.year ?? -1) == y }) {
+        return exactY.streamUrl
+      }
+      if let exact = library.first(where: { canonical($0.title) == target }) { return exact.streamUrl }
+      if let starts = library.first(where: { canonical($0.title).hasPrefix(target) }) { return starts.streamUrl }
+      if let contains = library.first(where: { canonical($0.title).contains(target) }) { return contains.streamUrl }
       return nil
-    }()
-
-    if let y = wantYear,
-       let exactY = library.first(where: { canonical($0.title) == target && ($0.year ?? -1) == y }) {
-      return exactY.streamUrl
     }
-    if let exact = library.first(where: { canonical($0.title) == target }) { return exact.streamUrl }
-    if let starts = library.first(where: { canonical($0.title).hasPrefix(target) }) { return starts.streamUrl }
-    if let contains = library.first(where: { canonical($0.title).contains(target) }) { return contains.streamUrl }
-    return nil
-  }
 
-  private func displayTitle(_ it: DiscoverItem) -> String {
-    let base = (it.title ?? it.name ?? "Unknown")
-    let year = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
-    return year.isEmpty ? base : "\(base) (\(year))"
-  }
-
-  private func posterURL(for it: DiscoverItem) -> URL? {
-    // Prefer TMDB path if provided
-    if let p = it.posterPath, !p.isEmpty {
-      if p.hasPrefix("http") { return URL(string: p) }
-      return URL(string: "https://image.tmdb.org/t/p/w342\(p.hasPrefix("/") ? p : "/\(p)")")
+    private func displayTitle(_ it: DiscoverItem) -> String {
+      let base = (it.title ?? it.name ?? "Unknown")
+      let year = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
+      return year.isEmpty ? base : "\(base) (\(year))"
     }
-    return posterURL(forTitle: (it.title ?? it.name ?? ""), year: {
-      if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      return nil
-    }())
+
+    private func posterURL(for it: DiscoverItem) -> URL? {
+      if let p = it.posterPath, !p.isEmpty {
+        if p.hasPrefix("http") { return URL(string: p) }
+        return URL(string: "https://image.tmdb.org/t/p/w342\(p.hasPrefix("/") ? p : "/\(p)")")
+      }
+      return posterURL(forTitle: (it.title ?? it.name ?? ""), year: {
+        if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+        if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+        return nil
+      }())
+    }
+
+    private func posterURL(forTitle title: String, year: Int?) -> URL? {
+      var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
+                            resolvingAgainstBaseURL: false)!
+      var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
+      if let y = year { q.append(.init(name: "y", value: String(y))) }
+      c.queryItems = q
+      return c.url
+    }
+
+    private func canonical(_ s: String) -> String {
+      var t = s.lowercased()
+      t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
+      t = t.replacingOccurrences(of: "&", with: " and ")
+      t = t.replacingOccurrences(of: ":", with: " ").replacingOccurrences(of: "-", with: " ")
+      while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
+      t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+      for art in ["the ", "a ", "an "] { if t.hasPrefix(art) { t = String(t.dropFirst(art.count)); break } }
+      return t
+    }
   }
 
-  private func posterURL(forTitle title: String, year: Int?) -> URL? {
-    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
-                          resolvingAgainstBaseURL: false)!
-    var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
-    if let y = year { q.append(.init(name: "y", value: String(y))) }
-    c.queryItems = q
-    return c.url
+  // MARK: - Local helpers reused from MoviesView
+
+  private struct MoviesDetentsCompatMediumLarge: ViewModifier {
+    func body(content: Content) -> some View {
+      if #available(iOS 16.0, *) {
+        content.presentationDetents([.medium, .large])
+      } else { content }
+    }
   }
 
-  private func canonical(_ s: String) -> String {
-    var t = s.lowercased()
-    t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
-    t = t.replacingOccurrences(of: "&", with: " and ")
-    t = t.replacingOccurrences(of: ":", with: " ").replacingOccurrences(of: "-", with: " ")
-    while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
-    t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-    for art in ["the ", "a ", "an "] { if t.hasPrefix(art) { t = String(t.dropFirst(art.count)); break } }
-    return t
+  private struct MoviesSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+      configuration.label
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.3)))
+        .opacity(configuration.isPressed ? 0.8 : 1.0)
+    }
   }
-}
-
-// MARK: - Local helpers reused from MoviesView
-
-private struct MoviesDetentsCompatMediumLarge: ViewModifier {
-  func body(content: Content) -> some View {
-    if #available(iOS 16.0, *) {
-      content.presentationDetents([.medium, .large])
-    } else { content }
-  }
-}
-
-private struct MoviesSecondaryButtonStyle: ButtonStyle {
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .padding(.horizontal, 12).padding(.vertical, 7)
-      .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.3)))
-      .opacity(configuration.isPressed ? 0.8 : 1.0)
-  }
-}
