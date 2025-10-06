@@ -24,79 +24,33 @@ struct DashboardView: View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
 
-      ScrollView {
-        VStack(spacing: 20) {
-
-          header
-
-          if shouldShowJellyfinPanel {
-            jellyfinPanel
-          }
-
-          carousel(
-            title: "Trending Movies",
-            loading: vm.loadingTrending,
-            emptyText: "No trending items available right now.",
-            items: vm.trending.map {
-              PosterItem(id: $0.id, title: $0.title, year: $0.year,
-                         poster: posterURL(for: $0.title, year: $0.year))
-            },
-            onPlay: { title, year in openByTitle(title, year: year) },
-            onInfo: { title, year in openInfo(title, year: year) }
-          )
-
-          carousel(
-            title: "Recently Added",
-            loading: vm.loadingRecent,
-            emptyText: "No recent movies right now.",
-            items: vm.recent.map {
-              PosterItem(id: $0.id, title: $0.title, year: $0.year,
-                         poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
-            },
-            onPlay: { title, year in openByTitle(title, year: year) },
-            onInfo: { title, year in openInfo(title, year: year) }
-          )
-
-          carousel(
-            title: "Upcoming Movies",
-            loading: vm.loadingUpcoming,
-            emptyText: "No upcoming titles right now.",
-            items: vm.upcoming.map {
-              PosterItem(id: String($0.id), title: $0.title, year: $0.year,
-                         poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
-            },
-            onPlay: { _, _ in },
-            onInfo: { title, year in openInfo(title, year: year) }
-          )
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 40)
+      // iOS 15/16 keyboard-dismiss safe ScrollView
+      if #available(iOS 16.0, *) {
+        ScrollView { content }.scrollDismissesKeyboard(.interactively)
+      } else {
+        ScrollView { content }
       }
     }
     .preferredColorScheme(.dark)
     .onAppear {
-      vm.bootstrap(email: email, isAdmin: isAdmin,
-                   subscriptionStatus: subscriptionStatus, isTrialing: isTrialing)
+      vm.bootstrap(
+        email: email,
+        isAdmin: isAdmin,
+        subscriptionStatus: subscriptionStatus,
+        isTrialing: isTrialing
+      )
     }
-
-    // Getting Started
+    // Getting Started (matches your web modal copy)
     .sheet(isPresented: $vm.showGettingStarted) {
-      GettingStartedSheet(showNoSubNotice: !hasAccess) {
-        vm.showGettingStarted = false
-      }
-      .modifier(DetentsCompatMediumLarge())
+      GettingStartedSheet(showNoSubNotice: !hasAccess) { vm.showGettingStarted = false }
+        .modifier(DetentsCompatMediumLarge())
     }
-
     // Announcements
     .sheet(isPresented: $vm.showAnnouncements) {
-      AnnouncementsSheet(isAdmin: isAdmin) {
-        vm.showAnnouncements = false
-      }
-      .modifier(DetentsCompatLarge())
+      AnnouncementsSheet(isAdmin: isAdmin) { vm.showAnnouncements = false }
+        .modifier(DetentsCompatLarge())
     }
-
-    // Player
+    // Player (only presented after we validate access in playOrShowOnboarding)
     .fullScreenCover(isPresented: $vm.playerOpen) {
       VideoPlayer(player: vm.player)
         .ignoresSafeArea()
@@ -110,7 +64,53 @@ struct DashboardView: View {
   }
 
   private var hasAccess: Bool { isTrialing || subscriptionStatus == "active" || isAdmin }
-  private var shouldShowJellyfinPanel: Bool { hasAccess && !vm.hasJellyfinAccount }
+
+  // MARK: - Scroll Content
+  @ViewBuilder
+  private var content: some View {
+    VStack(spacing: 20) {
+      header
+
+      carousel(
+        title: "Trending Movies",
+        loading: vm.loadingTrending,
+        emptyText: "No trending items available right now.",
+        items: vm.trending.map {
+          PosterItem(id: $0.id, title: $0.title, year: $0.year,
+                     poster: posterURL(for: $0.title, year: $0.year))
+        },
+        onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
+        onInfo: { title, year in openInfo(title, year: year) }
+      )
+
+      carousel(
+        title: "Recently Added",
+        loading: vm.loadingRecent,
+        emptyText: "No recent movies right now.",
+        items: vm.recent.map {
+          PosterItem(id: $0.id, title: $0.title, year: $0.year,
+                     poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
+        },
+        onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
+        onInfo: { title, year in openInfo(title, year: year) }
+      )
+
+      carousel(
+        title: "Upcoming Movies",
+        loading: vm.loadingUpcoming,
+        emptyText: "No upcoming titles right now.",
+        items: vm.upcoming.map {
+          PosterItem(id: String($0.id), title: $0.title, year: $0.year,
+                     poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
+        },
+        onPlay: { _, _ in /* no direct play */ },
+        onInfo: { title, year in openInfo(title, year: year) }
+      )
+    }
+    .padding(.horizontal, 16)
+    .padding(.top, 16)
+    .padding(.bottom, 40)
+  }
 
   // MARK: Header
   private var header: some View {
@@ -118,6 +118,7 @@ struct DashboardView: View {
       Text("s2vids Dashboard")
         .font(.title2)
         .fontWeight(.bold)
+
       Spacer()
 
       if !hasAccess && !isAdmin {
@@ -131,17 +132,13 @@ struct DashboardView: View {
         }
       }
 
-      Button {
-        vm.showAnnouncements = true
-      } label: {
+      Button { vm.showAnnouncements = true } label: {
         Image(systemName: "megaphone")
           .padding(8)
           .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Circle())
           .overlay(alignment: .topTrailing) {
             if vm.hasNewAnnouncements {
-              Circle().fill(Color.red)
-                .frame(width: 8, height: 8)
-                .offset(x: 4, y: -4)
+              Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: 4, y: -4)
             }
           }
       }
@@ -155,61 +152,6 @@ struct DashboardView: View {
       }
     }
     .foregroundColor(.white)
-  }
-
-  // MARK: Jellyfin Panel
-  private var jellyfinPanel: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Jellyfin Access").font(.title3).fontWeight(.bold)
-      HStack {
-        Text("Username").foregroundColor(.cyan).font(.caption).fontWeight(.bold)
-        Spacer()
-        Text(email).font(.subheadline)
-      }
-      .padding(.vertical, 4)
-
-      SecureField("New Password", text: $vm.jellyfinPassword)
-        .textContentType(.newPassword)
-        .padding(10)
-        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
-
-      SecureField("Confirm Password", text: $vm.jellyfinPassword2)
-        .textContentType(.newPassword)
-        .padding(10)
-        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
-
-      HStack {
-        Button {
-          Task { await vm.createOrResetJellyfin() }
-        } label: {
-          Text(vm.creatingJellyfin ? "Creating…" : "Create Account")
-            .fontWeight(.bold)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .background(Color.green, in: RoundedRectangle(cornerRadius: 12))
-            .foregroundColor(.black)
-        }
-        .disabled(vm.creatingJellyfin)
-
-        Button("Cancel") {
-          vm.jellyfinPassword = ""
-          vm.jellyfinPassword2 = ""
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(Color.gray.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
-      }
-
-      if !vm.jellyfinError.isEmpty {
-        Text(vm.jellyfinError).foregroundColor(.red)
-      }
-      if !vm.jellyfinSuccess.isEmpty {
-        Text(vm.jellyfinSuccess).foregroundColor(.green)
-      }
-    }
-    .padding(16)
-    .background(Color(red: 0.06, green: 0.09, blue: 0.16), in: RoundedRectangle(cornerRadius: 20))
-    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08)))
   }
 
   // MARK: Carousels
@@ -263,6 +205,7 @@ struct DashboardView: View {
                         .padding(8)
                         .background(.black.opacity(0.5), in: Circle())
                     }
+                    // Still show the play button only if the user has access
                     if hasAccess {
                       Button { onPlay(it.title, it.year) } label: {
                         Image(systemName: "play.fill")
@@ -291,26 +234,42 @@ struct DashboardView: View {
   }
 
   private func posterURL(for title: String, year: Int?) -> String {
-    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
-                          resolvingAgainstBaseURL: false)!
+    var c = URLComponents(
+      url: AppConfig.apiBase.appendingPathComponent("api/poster"),
+      resolvingAgainstBaseURL: false
+    )!
     var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
     if let y = year { q.append(.init(name: "y", value: String(y))) }
     c.queryItems = q
     return c.string ?? ""
   }
 
+  // MARK: - Access gate for play
+
+  private func playOrShowOnboarding(title: String, year: Int?) {
+    guard hasAccess else {
+      // Don’t open the player. Show onboarding instead.
+      vm.showGettingStarted = true
+      return
+    }
+    openByTitle(title, year: year)
+  }
+
   // MARK: Actions
+
   private func openInfo(_ title: String, year: Int?) {
-    vm.infoTitle = title
-    vm.infoYear = year
-    vm.infoOpen = true
     let poster = posterURL(for: title, year: year)
     let text = "\(title)\(year != nil ? " (\(year!))" : "")"
-    let sheet = InfoSheetView(title: text, posterURL: poster) { vm.infoOpen = false }
+    let sheet = InfoSheetView(title: text, posterURL: poster) { /* close handled by sheet */ }
     UIApplication.shared.present(sheet)
   }
 
   private func openByTitle(_ title: String, year: Int?) {
+    // As a second line of defense, also gate here.
+    guard hasAccess else {
+      vm.showGettingStarted = true
+      return
+    }
     Task {
       do {
         let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
@@ -330,7 +289,7 @@ struct DashboardView: View {
               let streamURL = URL(string: stream)
         else { return }
         vm.openPlayer(title: title, streamURL: streamURL)
-      } catch { }
+      } catch { /* ignore */ }
     }
   }
 }
@@ -344,25 +303,49 @@ struct GettingStartedSheet: View {
   var body: some View {
     NavigationView {
       VStack(alignment: .leading, spacing: 12) {
+        // Attention banner (matches web)
         if showNoSubNotice {
-          Text("You currently have **no active subscription**.")
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.red.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+          VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+              Image(systemName: "info.circle").foregroundColor(.red.opacity(0.9))
+              Text("Attention").font(.headline).fontWeight(.heavy)
+            }
+            Text("You currently have **no active subscription**.")
+          }
+          .padding(12)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(
+            LinearGradient(
+              colors: [Color.red.opacity(0.35), Color.orange.opacity(0.25)],
+              startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+          )
+          .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.red.opacity(0.4)))
+          .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        Text("Getting started").font(.headline).fontWeight(.bold)
-        Group {
-          Text("1. Select **Subscribe**.")
-          Text("2. After subscribing, return here and refresh.")
-          Text("3. Create your **Jellyfin** account & set a password.")
-          Text("4. Open the menu (top right) and **Launch Jellyfin**.")
-          Text("5. Sign in with your email + password.")
+
+        HStack(spacing: 8) {
+          Image(systemName: "questionmark.circle").foregroundColor(.indigo)
+          Text("Getting started").font(.headline).fontWeight(.heavy)
         }
+
+        // Steps — same copy as your web modal
+        VStack(alignment: .leading, spacing: 8) {
+          Text("**Welcome,** To start enjoying all of the premium benefits, follow the instructions below.")
+          Text("**1.** Select **Subscribe**.")
+          Text("**2.** After subscribing, return here and refresh the page.")
+          Text("**3.** Select **Create Jellyfin Account** and set a password.")
+          Text("**4.** Open the dropdown menu (top right corner).")
+          Text("**5.** Select **Launch Jellyfin**.")
+          Text("**6.** Sign in using your email + the password you set.")
+        }
+        .font(.callout)
         .foregroundColor(.secondary)
 
         Link("Subscribe",
              destination: URL(string: "https://buy.stripe.com/aFa14o8B758CeTnfrjfw406")!)
           .buttonStyle(.borderedProminent)
+          .tint(.green)
 
         Spacer()
       }
@@ -477,20 +460,11 @@ extension UIApplication {
 
 private struct DetentsCompatMediumLarge: ViewModifier {
   func body(content: Content) -> some View {
-    if #available(iOS 16.0, *) {
-      content.presentationDetents([.medium, .large])
-    } else {
-      content
-    }
+    if #available(iOS 16.0, *) { content.presentationDetents([.medium, .large]) } else { content }
   }
 }
-
 private struct DetentsCompatLarge: ViewModifier {
   func body(content: Content) -> some View {
-    if #available(iOS 16.0, *) {
-      content.presentationDetents([.large])
-    } else {
-      content
-    }
+    if #available(iOS 16.0, *) { content.presentationDetents([.large]) } else { content }
   }
 }
