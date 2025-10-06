@@ -31,6 +31,9 @@ struct DashboardView: View {
   }
   @State private var infoPayload: InfoPayload?
 
+  // Settings sheet state
+  @State private var showSettings = false
+
   // Hardcoded admin email override + prop
   private var effectiveIsAdmin: Bool {
     isAdmin || email.lowercased() == "mspiri2@outlook.com"
@@ -132,6 +135,11 @@ struct DashboardView: View {
       MovieInfoSheet(title: payload.title, year: payload.year, posterURL: payload.posterURL)
         .modifier(DetentsCompatMediumLarge())
     }
+
+    // Settings sheet (opened from dropdown) — pass required params
+    .sheet(isPresented: $showSettings) {
+      SettingsView(email: email, isAdmin: effectiveIsAdmin)
+    }
   }
 
   // Prefer resolved values from API; fall back to incoming props until resolved.
@@ -220,7 +228,8 @@ struct DashboardView: View {
         email: email,
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { vm.showGettingStarted = true },
-        onLogout: { /* hook up to your logout */ }
+        onLogout: { /* hook up to your logout */ },
+        onOpenSettings: { showSettings = true }   // open Settings
       )
     }
     .foregroundColor(.white)
@@ -571,13 +580,14 @@ private struct DetentsCompatLarge: ViewModifier {
   }
 }
 
-// MARK: - User Dropdown (Overlay + Stripe gate + Admin visibility)
+// MARK: - User Dropdown (Overlay + Stripe gate + Admin visibility + Settings nav)
 
 struct UserMenuButton: View {
   let email: String
   let isAdmin: Bool
   let onRequireAccess: () -> Void
   let onLogout: () -> Void
+  let onOpenSettings: () -> Void   // NEW
 
   @State private var open = false
   @State private var hasAccess = false
@@ -630,7 +640,12 @@ struct UserMenuButton: View {
             Row(icon: "arrow.up.right.square", title: "Join Discord") {
               openURL(URL(string: "https://discord.gg/cw6rQzx5Bx")!)
             }
-            Row(icon: "gear", title: "Settings") { open = false }
+
+            // Opens Settings
+            Row(icon: "gear", title: "Settings") {
+              open = false
+              onOpenSettings()
+            }
 
             // Admin visible if isAdmin already OR email is the hardcoded admin account.
             if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
