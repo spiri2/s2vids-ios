@@ -31,8 +31,9 @@ struct DashboardView: View {
   }
   @State private var infoPayload: InfoPayload?
 
-  // Settings sheet state
+  // Settings / Movies sheet state
   @State private var showSettings = false
+  @State private var showMovies = false   // <-- NEW
 
   // Hardcoded admin email override + prop
   private var effectiveIsAdmin: Bool {
@@ -136,9 +137,19 @@ struct DashboardView: View {
         .modifier(DetentsCompatMediumLarge())
     }
 
-    // Settings sheet (opened from dropdown) — pass required params
+    // Settings sheet (opened from dropdown)
     .sheet(isPresented: $showSettings) {
       SettingsView(email: email, isAdmin: effectiveIsAdmin)
+    }
+
+    // Movies page (opened from dropdown) — fullscreen
+    .fullScreenCover(isPresented: $showMovies) {
+      MoviesView(
+        email: email,
+        isAdmin: effectiveIsAdmin,
+        subscriptionStatus: effectiveStatus,
+        isTrialing: effectiveTrialing
+      )
     }
   }
 
@@ -229,7 +240,8 @@ struct DashboardView: View {
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { vm.showGettingStarted = true },
         onLogout: { /* hook up to your logout */ },
-        onOpenSettings: { showSettings = true }   // open Settings
+        onOpenSettings: { showSettings = true },   // open Settings
+        onOpenMovies: { showMovies = true }        // <-- open Movies
       )
     }
     .foregroundColor(.white)
@@ -580,14 +592,15 @@ private struct DetentsCompatLarge: ViewModifier {
   }
 }
 
-// MARK: - User Dropdown (Overlay + Stripe gate + Admin visibility + Settings nav)
+// MARK: - User Dropdown (now with Movies callback)
 
 struct UserMenuButton: View {
   let email: String
   let isAdmin: Bool
   let onRequireAccess: () -> Void
   let onLogout: () -> Void
-  let onOpenSettings: () -> Void   // NEW
+  let onOpenSettings: () -> Void
+  let onOpenMovies: () -> Void       // <-- NEW
 
   @State private var open = false
   @State private var hasAccess = false
@@ -626,7 +639,13 @@ struct UserMenuButton: View {
           VStack(spacing: 0) {
             Row(icon: "rectangle.grid.2x2", title: "Dashboard") { open = false }
             Row(icon: "safari", title: "Discover") { open = false }
-            Row(icon: "film", title: "Movies") { open = false }
+
+            // Movies → open MoviesView fullscreen
+            Row(icon: "film", title: "Movies") {
+              open = false
+              onOpenMovies()
+            }
+
             Row(icon: "tv", title: "TV Shows") { open = false }
             Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
             Row(icon: "calendar", title: "TV Show Calendar") { open = false }
@@ -641,13 +660,11 @@ struct UserMenuButton: View {
               openURL(URL(string: "https://discord.gg/cw6rQzx5Bx")!)
             }
 
-            // Opens Settings
             Row(icon: "gear", title: "Settings") {
               open = false
               onOpenSettings()
             }
 
-            // Admin visible if isAdmin already OR email is the hardcoded admin account.
             if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
               Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) { open = false }
             }
