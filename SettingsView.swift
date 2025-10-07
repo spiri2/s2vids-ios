@@ -137,10 +137,18 @@ struct SettingsView: View {
           )
         },
         onOpenTvShows: {
-          // ✅ NEW: route to TV Shows from Settings
+          // ✅ route to TV Shows from Settings
           dismiss()
           NotificationCenter.default.post(
             name: Notification.Name("S2OpenTvShows"),
+            object: nil
+          )
+        },
+        onOpenAdmin: {
+          // ✅ NEW: Admin entry (visible only for admins in UserMenuButton)
+          dismiss()
+          NotificationCenter.default.post(
+            name: Notification.Name("S2OpenAdmin"),
             object: nil
           )
         }
@@ -567,7 +575,7 @@ struct SettingsView: View {
   }
 
   private func changeJellyfinPassword() async {
-    jfSuccess = "Triggered change password (implement server endpoint)."
+    jfSuccess = "Triggered change password (implement server endpoint).."
   }
 
   private func cancelSubscription() async {
