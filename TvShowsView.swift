@@ -7,15 +7,6 @@ import SwiftUI
 import AVKit
 import Foundation
 
-// MARK: - Local API base shim
-
-private func apiBaseURL() -> URL {
-  if let s = Bundle.main.object(forInfoDictionaryKey: "S2_API_BASE") as? String,
-     let u = URL(string: s) { return u }
-  // Match web app host
-  return URL(string: "https://s2vids.org/")!
-}
-
 // MARK: - Models
 
 private struct Series: Identifiable, Hashable {
@@ -39,6 +30,210 @@ private struct Episode: Identifiable, Hashable {
   let posterUrl: String?
   let streamUrl: String
   let jellyfinUrl: String?
+}
+
+// MARK: - Poster helpers (Local → TMDB → OMDb)
+
+private func slugify(_ s: String) -> String {
+  var t = s.lowercased()
+  t = t.replacingOccurrences(of: "&", with: "and")
+  let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
+  t = t.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? String($0) : "-" }.joined()
+  while t.contains("--") { t = t.replacingOccurrences(of: "--", with: "-") }
+  return t.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+}
+
+private func checkImage(_ urlString: String) async -> Bool {
+  guard let url = URL(string: urlString) else { return false }
+  var req = URLRequest(url: url)
+  req.httpMethod = "GET"
+  req.timeoutInterval = 6
+  do {
+    let (_, resp) = try await URLSession.shared.data(for: req)
+    if let http = resp as? HTTPURLResponse, http.statusCode == 200 {
+      return true
+    }
+  } catch { }
+  return false
+}
+
+private func firstReachable(_ urls: [String]) async -> String? {
+  for u in urls where !u.isEmpty {
+    if await checkImage(u) { return u }
+  }
+  return nil
+}
+
+// Local candidates
+private func localSeriesCandidates(title: String, id: String?, year: Int?) -> [String] {
+  let s = slugify(title)
+  let y = year.map(String.init)
+  return [
+    id.map { "/posters/tv/\($0).jpg" } ?? "",
+    "/posters/tv/\(s).jpg",
+    y.map { "/posters/tv/\(s)-\($0).jpg" } ?? "",
+    "/images/tv/\(s)/poster.jpg",
+    "/images/tv/\(s)/cover.jpg",
+    y.map { "/images/tv/\(s)-\($0)/poster.jpg" } ?? "",
+    "/media/tv/\(s)/poster.jpg",
+    "/media/tv/\(s)/folder.jpg"
+  ].filter { !$0.isEmpty }
+}
+
+private func localSeasonCandidates(seriesTitle: String, season: Int, id: String?, year: Int?) -> [String] {
+  let s = slugify(seriesTitle)
+  let sn = String(format: "%02d", season)
+  let y = year.map(String.init)
+  return [
+    id.map { "/posters/tv/\($0)-s\(sn).jpg" } ?? "",
+    "/posters/tv/\(s)-s\(sn).jpg",
+    y.map { "/posters/tv/\(s)-\($0)-s\(sn).jpg" } ?? "",
+    "/images/tv/\(s)/season-\(sn).jpg",
+    "/images/tv/\(s)/s\(sn).jpg",
+    "/images/tv/\(s)/Season \(season)/poster.jpg",
+    "/media/tv/\(s)/Season \(season)/poster.jpg"
+  ].filter { !$0.isEmpty }
+}
+
+private func localEpisodeCandidates(seriesTitle: String, season: Int, episode: Int, epId: String?, year: Int?) -> [String] {
+  let s = slugify(seriesTitle)
+  let sn = String(format: "%02d", season)
+  let en = String(format: "%02d", episode)
+  let y = year.map(String.init)
+  return [
+    epId.map { "/posters/tv/\($0).jpg" } ?? "",
+    "/posters/tv/\(s)-s\(sn)e\(en).jpg",
+    y.map { "/posters/tv/\(s)-\($0)-s\(sn)e\(en).jpg" } ?? "",
+    "/images/tv/\(s)/season-\(sn)/e\(en).jpg",
+    "/images/tv/\(s)/Season \(season)/Episode \(episode).jpg",
+    "/images/tv/\(s)/Season \(season)/S\(sn)E\(en).jpg",
+    "/media/tv/\(s)/Season \(season)/S\(sn)E\(en).jpg",
+    "/media/tv/\(s)/Season \(season)/Episode \(episode).jpg"
+  ].filter { !$0.isEmpty }
+}
+
+// TMDB
+private func tmdbFindTvId(title: String, year: Int?) async -> Int? {
+  var comps = URLComponents(string: "https://api.themoviedb.org/3/search/tv")!
+  comps.queryItems = [
+    .init(name: "api_key", value: AppConfig.tmdbKey),
+    .init(name: "query", value: title)
+  ]
+  if let y = year { comps.queryItems?.append(.init(name: "first_air_date_year", value: String(y))) }
+  do {
+    let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let arr = root["results"] as? [[String: Any]],
+       let id = arr.first?["id"] as? Int {
+      return id
+    }
+  } catch { }
+  return nil
+}
+
+private func tmdbTvPoster(title: String, year: Int?) async -> String? {
+  guard let id = await tmdbFindTvId(title: title, year: year) else { return nil }
+  let url = URL(string: "https://api.themoviedb.org/3/tv/\(id)?api_key=\(AppConfig.tmdbKey)")!
+  do {
+    let (data, resp) = try await URLSession.shared.data(from: url)
+    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let path = root["poster_path"] as? String {
+      return "https://image.tmdb.org/t/p/w342\(path)"
+    }
+  } catch { }
+  return nil
+}
+
+private func tmdbSeasonPoster(seriesTitle: String, season: Int, year: Int?) async -> String? {
+  guard let id = await tmdbFindTvId(title: seriesTitle, year: year) else { return nil }
+  let url = URL(string: "https://api.themoviedb.org/3/tv/\(id)/season/\(season)?api_key=\(AppConfig.tmdbKey)")!
+  do {
+    let (data, resp) = try await URLSession.shared.data(from: url)
+    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let path = root["poster_path"] as? String {
+      return "https://image.tmdb.org/t/p/w342\(path)"
+    }
+  } catch { }
+  return nil
+}
+
+private func tmdbEpisodeStill(seriesTitle: String, season: Int, episode: Int, year: Int?) async -> String? {
+  guard let id = await tmdbFindTvId(title: seriesTitle, year: year) else { return nil }
+  let url = URL(string: "https://api.themoviedb.org/3/tv/\(id)/season/\(season)/episode/\(episode)?api_key=\(AppConfig.tmdbKey)")!
+  do {
+    let (data, resp) = try await URLSession.shared.data(from: url)
+    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+      if let path = (root["still_path"] as? String) ?? (root["poster_path"] as? String) {
+        return "https://image.tmdb.org/t/p/w342\(path)"
+      }
+    }
+  } catch { }
+  return nil
+}
+
+// OMDb
+private func omdbSeriesPoster(title: String, year: Int?) async -> String? {
+  var comps = URLComponents(string: "https://www.omdbapi.com/")!
+  comps.queryItems = [
+    .init(name: "apikey", value: AppConfig.omdbKey),
+    .init(name: "type", value: "series"),
+    .init(name: "t", value: title)
+  ]
+  if let y = year { comps.queryItems?.append(.init(name: "y", value: String(y))) }
+  do {
+    let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let p = root["Poster"] as? String, p != "N/A" {
+      return p
+    }
+  } catch { }
+  return nil
+}
+
+private func omdbEpisodePoster(title: String, season: Int, episode: Int, year: Int?) async -> String? {
+  var comps = URLComponents(string: "https://www.omdbapi.com/")!
+  comps.queryItems = [
+    .init(name: "apikey", value: AppConfig.omdbKey),
+    .init(name: "type", value: "episode"),
+    .init(name: "t", value: title),
+    .init(name: "Season", value: String(season)),
+    .init(name: "Episode", value: String(episode))
+  ]
+  if let y = year { comps.queryItems?.append(.init(name: "y", value: String(y))) }
+  do {
+    let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let p = root["Poster"] as? String, p != "N/A" {
+      return p
+    }
+  } catch { }
+  return nil
+}
+
+// Unified resolvers
+private func resolveSeriesPoster(title: String, id: String, year: Int?) async -> String? {
+  if let local = await firstReachable(localSeriesCandidates(title: title, id: id, year: year)) { return local }
+  if let tmdb = await tmdbTvPoster(title: title, year: year) { return tmdb }
+  return await omdbSeriesPoster(title: title, year: year)
+}
+
+private func resolveSeasonPoster(seriesTitle: String, season: Int, seriesId: String, year: Int?) async -> String? {
+  if let local = await firstReachable(localSeasonCandidates(seriesTitle: seriesTitle, season: season, id: seriesId, year: year)) { return local }
+  if let tmdb = await tmdbSeasonPoster(seriesTitle: seriesTitle, season: season, year: year) { return tmdb }
+  return await resolveSeriesPoster(title: seriesTitle, id: seriesId, year: year)
+}
+
+private func resolveEpisodePoster(seriesTitle: String, season: Int, episode: Int, epId: String, year: Int?) async -> String? {
+  if let local = await firstReachable(localEpisodeCandidates(seriesTitle: seriesTitle, season: season, episode: episode, epId: epId, year: year)) { return local }
+  if let tmdb = await tmdbEpisodeStill(seriesTitle: seriesTitle, season: season, episode: episode, year: year) { return tmdb }
+  if let omdb = await omdbEpisodePoster(title: seriesTitle, season: season, episode: episode, year: year) { return omdb }
+  return await resolveSeasonPoster(seriesTitle: seriesTitle, season: season, seriesId: "", year: year)
 }
 
 // MARK: - View
@@ -91,9 +286,9 @@ struct TvShowsView: View {
   @State private var showGettingStarted = false
   @State private var showSettings = false
 
-  // Favorites (series / season / episode via compound keys)
+  // Favorites
   private var favsKey: String { "s2vids:tv-favorites:\(email.isEmpty ? "anon" : email)" }
-  @State private var favorites: Set<String> = [] // keys like "series:<id>", "season:<seriesId>:<season>", "episode:<id>"
+  @State private var favorites: Set<String> = []
   @State private var favoritesOpen = false
 
   var body: some View {
@@ -130,7 +325,7 @@ struct TvShowsView: View {
       }
       .modifier(MoviesDetentsCompatMediumLarge())
     }
-    // Settings full-screen (reusing SettingsView from app)
+    // Settings
     .fullScreenCover(isPresented: $showSettings) {
       SettingsView(email: email, isAdmin: effectiveIsAdmin)
     }
@@ -138,8 +333,7 @@ struct TvShowsView: View {
     .fullScreenCover(isPresented: $playerOpen, onDismiss: stopObserving) {
       ZStack(alignment: .topTrailing) {
         if let p = player {
-          VideoPlayer(player: p)
-            .ignoresSafeArea()
+          VideoPlayer(player: p).ignoresSafeArea()
         } else {
           Color.black.ignoresSafeArea()
         }
@@ -190,9 +384,7 @@ struct TvShowsView: View {
       }
 
       // Favorites button
-      Button {
-        favoritesOpen.toggle()
-      } label: {
+      Button { favoritesOpen.toggle() } label: {
         Image(systemName: "heart.circle")
           .font(.system(size: 22, weight: .semibold))
           .foregroundColor(.white)
@@ -212,12 +404,13 @@ struct TvShowsView: View {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
         },
-        onOpenTvShows: { } // ✅ already here (no-op)
+        onOpenTvShows: { /* already here */ }
       )
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 12)
     .background(Color.black.opacity(0.12))
+    .zIndex(10_000) // keep dropdown above posters
   }
 
   // MARK: Series Grid
@@ -441,14 +634,14 @@ struct TvShowsView: View {
     CGFloat(rows(for: itemCount, cols: cols)) * 260
   }
 
-  // MARK: Networking (liberal parsing like MoviesView)
+  // MARK: Networking (with async poster backfill inside Task)
 
   private func fetchSeries() {
     loadingSeries = true
     Task {
       defer { loadingSeries = false }
       do {
-        let url = apiBaseURL().appendingPathComponent("api/tv/series")
+        let url = AppConfig.apiBase.appendingPathComponent("api/tv/series")
         let (data, resp) = try await URLSession.shared.data(from: url)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { allSeries = []; return }
 
@@ -459,7 +652,7 @@ struct TvShowsView: View {
           rows = (dict["items"] as? [[String: Any]]) ?? (dict["results"] as? [[String: Any]]) ?? []
         } else { rows = [] }
 
-        let list: [Series] = rows.compactMap { o in
+        var list: [Series] = rows.compactMap { o in
           let id = (o["id"] as? String)
             ?? (o["series_id"] as? String)
             ?? (o["id"] as? Int).map(String.init)
@@ -474,7 +667,20 @@ struct TvShowsView: View {
           return Series(id: id, title: title, posterUrl: poster, year: year)
         }
 
-        allSeries = list
+        // Backfill missing/invalid posters (async)
+        var updated: [Series] = []
+        updated.reserveCapacity(list.count)
+        for s in list {
+          if let p = s.posterUrl, await checkImage(p) {
+            updated.append(s)
+          } else if let resolved = await resolveSeriesPoster(title: s.title, id: s.id, year: s.year) {
+            updated.append(Series(id: s.id, title: s.title, posterUrl: resolved, year: s.year))
+          } else {
+            updated.append(s)
+          }
+        }
+
+        allSeries = updated
       } catch {
         allSeries = []
       }
@@ -510,7 +716,7 @@ struct TvShowsView: View {
     Task {
       defer { loadingSeasons = false }
       do {
-        var comps = URLComponents(url: apiBaseURL().appendingPathComponent("api/tv/seasons"), resolvingAgainstBaseURL: false)!
+        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/tv/seasons"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "series", value: seriesId)]
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { seasons = []; return }
@@ -521,20 +727,32 @@ struct TvShowsView: View {
         else if let dict = parsed as? [String: Any] { rows = (dict["items"] as? [[String: Any]]) ?? [] }
         else { rows = [] }
 
-        let list: [Season] = rows.compactMap { o in
+        var list: [Season] = rows.compactMap { o in
           let seasonNum: Int? = {
             if let n = o["season"] as? Int { return n }
             if let ns = o["season"] as? String, let ni = Int(ns) { return ni }
             return nil
           }()
-          let title = (o["title"] as? String)
-            ?? (seasonNum.map { "Season \($0)" })
+          let title = (o["title"] as? String) ?? seasonNum.map { "Season \($0)" }
           let poster = (o["posterUrl"] as? String) ?? (o["poster_url"] as? String)
           guard let seasonNum, let title else { return nil }
           return Season(season: seasonNum, title: title, posterUrl: poster)
         }
 
-        seasons = list
+        // Backfill posters
+        var updated: [Season] = []
+        updated.reserveCapacity(list.count)
+        for sn in list {
+          if let p = sn.posterUrl, await checkImage(p) {
+            updated.append(sn)
+          } else if let resolved = await resolveSeasonPoster(seriesTitle: seriesTitle, season: sn.season, seriesId: seriesId, year: year) {
+            updated.append(Season(season: sn.season, title: sn.title, posterUrl: resolved))
+          } else {
+            updated.append(sn)
+          }
+        }
+
+        seasons = updated
       } catch {
         seasons = []
       }
@@ -546,7 +764,7 @@ struct TvShowsView: View {
     Task {
       defer { loadingEpisodes = false }
       do {
-        var comps = URLComponents(url: apiBaseURL().appendingPathComponent("api/tv/episodes"), resolvingAgainstBaseURL: false)!
+        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/tv/episodes"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
           URLQueryItem(name: "series", value: seriesId),
           URLQueryItem(name: "season", value: String(season))
@@ -560,7 +778,7 @@ struct TvShowsView: View {
         else if let dict = parsed as? [String: Any] { rows = (dict["items"] as? [[String: Any]]) ?? [] }
         else { rows = [] }
 
-        let list: [Episode] = rows.compactMap { o in
+        var list: [Episode] = rows.compactMap { o in
           let id = (o["id"] as? String)
             ?? (o["episode_id"] as? String)
             ?? (o["id"] as? Int).map(String.init)
@@ -578,7 +796,20 @@ struct TvShowsView: View {
           return Episode(id: id, title: title, episode: epNum, posterUrl: poster, streamUrl: stream, jellyfinUrl: jelly)
         }
 
-        episodes = list
+        // Backfill episode posters
+        var updated: [Episode] = []
+        updated.reserveCapacity(list.count)
+        for ep in list {
+          if let p = ep.posterUrl, await checkImage(p) {
+            updated.append(ep)
+          } else if let resolved = await resolveEpisodePoster(seriesTitle: seriesTitle, season: season, episode: ep.episode, epId: ep.id, year: year) {
+            updated.append(Episode(id: ep.id, title: ep.title, episode: ep.episode, posterUrl: resolved, streamUrl: ep.streamUrl, jellyfinUrl: ep.jellyfinUrl))
+          } else {
+            updated.append(ep)
+          }
+        }
+
+        episodes = updated
       } catch {
         episodes = []
       }
@@ -595,7 +826,7 @@ struct TvShowsView: View {
        (scheme == "http" || scheme == "https") {
       return u
     }
-    var c = URLComponents(url: apiBaseURL().appendingPathComponent("api/poster"), resolvingAgainstBaseURL: false)!
+    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"), resolvingAgainstBaseURL: false)!
     var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
     if let y = year { q.append(.init(name: "y", value: String(y))) }
     c.queryItems = q
@@ -665,15 +896,11 @@ struct TvShowsView: View {
     guard !email.isEmpty else { accessResolved = true; return }
     Task {
       do {
-        var comps = URLComponents(url: apiBaseURL().appendingPathComponent("api/get-stripe-status"), resolvingAgainstBaseURL: false)!
+        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "email", value: email)]
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
         if (resp as? HTTPURLResponse)?.statusCode == 200 {
-          struct Stripe: Decodable {
-            let status: String?
-            let active: Bool?
-            let trial_end: Int?
-          }
+          struct Stripe: Decodable { let status: String?; let active: Bool?; let trial_end: Int? }
           let s = try? JSONDecoder().decode(Stripe.self, from: data)
           let status = (s?.status ?? "")
           let active = s?.active ?? false
