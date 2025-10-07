@@ -101,6 +101,8 @@ struct SettingsView: View {
         .padding(.top, 16)
         .padding(.bottom, 36)
       }
+      // ⬇️ Pull down to refresh Settings
+      .refreshable { await refreshSettings() }
     }
     .preferredColorScheme(.dark)
     .task { await bootstrap() }
@@ -145,7 +147,7 @@ struct SettingsView: View {
           )
         },
         onOpenAdmin: {
-          // ✅ NEW: Admin entry (visible only for admins in UserMenuButton)
+          // ✅ Admin entry (visible only for admins in UserMenuButton)
           dismiss()
           NotificationCenter.default.post(
             name: Notification.Name("S2OpenAdmin"),
@@ -530,6 +532,14 @@ struct SettingsView: View {
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
+  }
+
+  // ⬇️ Called by pull-to-refresh
+  private func refreshSettings() async {
+    await fetchStripeStatus()
+    await checkJellyfin()
+    invitesAvailable = inviteLimit
+    // keep existing invites list as-is; add a fetch here if you later back it by an API
   }
 
   private func fetchStripeStatus() async {
