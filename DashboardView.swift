@@ -1,176 +1,221 @@
+
 //
-//  DiscoverView.swift
+//  DashboardView.swift
 //  s2vids
 //
 
 import SwiftUI
 import AVKit
 
-// MARK: - Models (match web payloads)
+// MARK: - Dashboard
 
-private struct DiscoverItem: Identifiable, Decodable, Hashable {
-  let id: Int                 // TMDB id
-  let title: String?
-  let name: String?
-  let releaseDate: String?
-  let firstAirDate: String?
-  let posterPath: String?
-  let mediaType: String?      // "movie" | "tv"
+struct DashboardView: View {
+  @StateObject private var vm = DashboardViewModel()
 
-  enum CodingKeys: String, CodingKey {
-    case id
-    case title, name
-    case releaseDate = "releaseDate"
-    case firstAirDate = "firstAirDate"
-    case posterPath = "posterPath"
-    case mediaType = "mediaType"
-    // snake_case fallbacks:
-    case release_date, first_air_date, poster_path, media_type
-  }
+  // Inject after login:
+  var email: String
+  var isAdmin: Bool
+  var subscriptionStatus: String
+  var isTrialing: Bool
 
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    id = try c.decode(Int.self, forKey: .id)
-    title = try c.decodeIfPresent(String.self, forKey: .title)
-    name = try c.decodeIfPresent(String.self, forKey: .name)
-    releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
-      ?? (try c.decodeIfPresent(String.self, forKey: .release_date))
-    firstAirDate = try c.decodeIfPresent(String.self, forKey: .firstAirDate)
-      ?? (try c.decodeIfPresent(String.self, forKey: .first_air_date))
-    posterPath = try c.decodeIfPresent(String.self, forKey: .posterPath)
-      ?? (try c.decodeIfPresent(String.self, forKey: .poster_path))
-    mediaType = try c.decodeIfPresent(String.self, forKey: .mediaType)
-      ?? (try c.decodeIfPresent(String.self, forKey: .media_type))
-  }
-}
-
-private struct DiscoverResponse: Decodable {
-  let results: [DiscoverItem]?
-  let page: Int?
-  let totalPages: Int?
-  let totalResults: Int?
-}
-
-private struct Movie: Identifiable, Decodable, Hashable {
-  let id: String
-  let title: String
-  let streamUrl: String
-  let year: Int?
-  let posterUrl: String?
-}
-
-private struct StripeStatusResponse: Decodable {
-  let status: String?
-  let active: Bool?
-  let trial_end: Int?
-}
-
-// MARK: - View
-
-struct DiscoverView: View {
-  // Inject from Dashboard like MoviesView
-  let email: String
-  let isAdmin: Bool
-  let subscriptionStatus: String
-  let isTrialing: Bool
-
-  @Environment(\.dismiss) private var dismiss
-
-  // Access State
-  @State private var resolvedStatus = ""
-  @State private var resolvedTrialing = false
+  // Resolved from API so gating is correct even if props are placeholders
+  @State private var resolvedStatus: String = ""
+  @State private var resolvedTrialing: Bool = false
   @State private var accessResolved = false
 
-  private var effectiveStatus: String { accessResolved ? resolvedStatus : subscriptionStatus }
-  private var effectiveTrialing: Bool { accessResolved ? resolvedTrialing : isTrialing }
-  private var effectiveIsAdmin: Bool { isAdmin || email.lowercased() == "mspiri2@outlook.com" }
-  private var hasAccess: Bool { effectiveTrialing || effectiveStatus.lowercased() == "active" || effectiveIsAdmin }
+  // Info sheet state (avoid UIApplication.present)
+  struct InfoPayload: Identifiable {
+    let id = UUID()
+    let title: String
+    let year: Int?
+    let posterURL: String
+  }
+  @State private var infoPayload: InfoPayload?
 
-  // UI State
-  @State private var query = ""
-  @State private var page = 1
-  @State private var totalPages = 1
-  @State private var totalResults = 0
-  @State private var items: [DiscoverItem] = []
-  @State private var loading = false
-  @State private var errText: String? = nil
-
-  // Requests State
-  @State private var requestedIds: Set<Int> = []
-  @State private var loadingId: Int? = nil
-
-  // Library
-  @State private var library: [Movie] = []
-
-  // Sheets / Player
-  @State private var showGettingStarted = false
-  @State private var infoTitle: String = ""
-  @State private var infoYear: Int? = nil
-  @State private var infoOpen = false
-
-  @State private var playerOpen = false
-  @State private var player: AVPlayer? = nil
-  @State private var currentStreamURL: URL? = nil
-
-  // Settings
+  // Settings / Movies / Discover / TV Shows / Admin
   @State private var showSettings = false
+  @State private var showMovies = false
+  @State private var showDiscover = false
+  @State private var showTvShows = false
+  @State private var showAdmin = false                 // ✅ NEW
+
+  // Hardcoded admin email override + prop
+  private var effectiveIsAdmin: Bool {
+    isAdmin || email.lowercased() == "mspiri2@outlook.com"
+  }
 
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
 
       ScrollView {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
           header
-          searchBar
-          paginationBar
-          gridSection
-          paginationBar
+
+          carousel(
+            title: "Trending Movies",
+            loading: vm.loadingTrending,
+            emptyText: "No trending items available right now.",
+            items: vm.trending.map {
+              PosterItem(id: $0.id, title: $0.title, year: $0.year,
+                         poster: posterURL(for: $0.title, year: $0.year))
+            },
+            onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
+            onInfo: { title, year in showInfo(title, year: year) }
+          )
+
+          carousel(
+            title: "Recently Added",
+            loading: vm.loadingRecent,
+            emptyText: "No recent movies right now.",
+            items: vm.recent.map {
+              PosterItem(id: $0.id, title: $0.title, year: $0.year,
+                         poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
+            },
+            onPlay: { title, year in playOrShowOnboarding(title: title, year: year) },
+            onInfo: { title, year in showInfo(title, year: year) }
+          )
+
+          carousel(
+            title: "Upcoming Movies",
+            loading: vm.loadingUpcoming,
+            emptyText: "No upcoming titles right now.",
+            items: vm.upcoming.map {
+              PosterItem(id: String($0.id), title: $0.title, year: $0.year,
+                         poster: $0.poster ?? posterURL(for: $0.title, year: $0.year))
+            },
+            onPlay: { _, _ in /* requests not supported here */ },
+            onInfo: { title, year in showInfo(title, year: year) }
+          )
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 40)
       }
     }
     .preferredColorScheme(.dark)
     .onAppear {
-      bootstrapAccess()
-      loadRequestedIds()
-      loadLibrary()
-      fetchPage()
+      vm.bootstrap(email: email,
+                   isAdmin: effectiveIsAdmin,
+                   subscriptionStatus: subscriptionStatus,
+                   isTrialing: isTrialing)
+      resolveAccess()
     }
+
     // Getting Started
-    .sheet(isPresented: $showGettingStarted) {
+    .sheet(isPresented: $vm.showGettingStarted) {
       GettingStartedSheet(showNoSubNotice: !hasAccess) {
-        showGettingStarted = false
+        vm.showGettingStarted = false
       }
-      .modifier(MoviesDetentsCompatMediumLarge())
+      .modifier(DetentsCompatMediumLarge())
     }
-    // Info
-    .sheet(isPresented: $infoOpen) {
-      MovieInfoSheet(title: infoTitle,
-                     year: infoYear,
-                     posterURL: posterURL(forTitle: infoTitle, year: infoYear)?.absoluteString ?? "")
-      .modifier(MoviesDetentsCompatMediumLarge())
+
+    // Announcements
+    .sheet(isPresented: $vm.showAnnouncements) {
+      AnnouncementsSheet(isAdmin: effectiveIsAdmin) {
+        vm.showAnnouncements = false
+      }
+      .modifier(DetentsCompatLarge())
     }
-    // Settings
-    .fullScreenCover(isPresented: $showSettings) {
+
+    // Player (only if hasAccess)
+    .fullScreenCover(
+      isPresented: Binding(
+        get: { vm.playerOpen && hasAccess },
+        set: { vm.playerOpen = $0 }
+      )
+    ) {
+      VideoPlayer(player: vm.player)
+        .ignoresSafeArea()
+        .overlay(alignment: .topTrailing) {
+          Button("Close") { vm.closePlayer() }
+            .padding(12)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding()
+        }
+    }
+
+    // Info sheet (SwiftUI-native)
+    .sheet(item: $infoPayload) { payload in
+      MovieInfoSheet(title: payload.title, year: payload.year, posterURL: payload.posterURL)
+        .modifier(DetentsCompatMediumLarge())
+    }
+
+    // Settings sheet (opened from dropdown)
+    .sheet(isPresented: $showSettings) {
       SettingsView(email: email, isAdmin: effectiveIsAdmin)
     }
-    // Player
-    .fullScreenCover(isPresented: $playerOpen) {
-      ZStack(alignment: .topTrailing) {
-        if let p = player {
-          VideoPlayer(player: p)
-            .ignoresSafeArea()
-            .onDisappear { p.pause() }
-            .onAppear { p.play() }
+
+    // Movies page (opened from dropdown)
+    .fullScreenCover(isPresented: $showMovies) {
+      MoviesView(
+        email: email,
+        isAdmin: effectiveIsAdmin,
+        subscriptionStatus: effectiveStatus,
+        isTrialing: effectiveTrialing
+      )
+    }
+
+    // Discover page (opened from dropdown)
+    .fullScreenCover(isPresented: $showDiscover) {
+      DiscoverView(
+        email: email,
+        isAdmin: effectiveIsAdmin,
+        subscriptionStatus: effectiveStatus,
+        isTrialing: effectiveTrialing
+      )
+    }
+
+    // TV Shows page (opened from dropdown)
+    .fullScreenCover(isPresented: $showTvShows) {
+      TvShowsView(
+        email: email,
+        isAdmin: effectiveIsAdmin,
+        subscriptionStatus: effectiveStatus,
+        isTrialing: effectiveTrialing
+      )
+    }
+
+    // ✅ Admin page (opened from dropdown)
+    .fullScreenCover(isPresented: $showAdmin) {
+      AdminView(email: email)
+    }
+  }
+
+  // Prefer resolved values from API; fall back to incoming props until resolved.
+  private var effectiveStatus: String { accessResolved ? resolvedStatus : subscriptionStatus }
+  private var effectiveTrialing: Bool { accessResolved ? resolvedTrialing : isTrialing }
+  private var hasAccess: Bool { effectiveTrialing || effectiveStatus == "active" || effectiveIsAdmin }
+
+  private func resolveAccess() {
+    guard !email.isEmpty else { return }
+    Task {
+      do {
+        var comps = URLComponents(
+          url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+          resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [URLQueryItem(name: "email", value: email)]
+        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+        if (resp as? HTTPURLResponse)?.statusCode == 200,
+           let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+          let status = (obj["status"] as? String) ?? ""
+          let active = (obj["active"] as? Bool) ?? false
+          let trialEnd = (obj["trial_end"] as? Int) ?? 0
+          resolvedStatus = active ? "active" : status
+          resolvedTrialing = (status == "trialing") || trialEnd > 0
         } else {
-          Color.black.ignoresSafeArea()
+          resolvedStatus = ""
+          resolvedTrialing = false
         }
-        Button("Close") { closePlayer() }
-          .padding(12)
-          .background(.ultraThinMaterial, in: Capsule())
-          .padding()
+      } catch {
+        resolvedStatus = ""
+        resolvedTrialing = false
+      }
+      accessResolved = true
+      if !hasAccess {
+        vm.playerOpen = false
+        vm.showGettingStarted = true
       }
     }
   }
@@ -179,418 +224,584 @@ struct DiscoverView: View {
 
   private var header: some View {
     HStack(spacing: 12) {
-      Text("Discover")
-        .font(.system(size: 22, weight: .bold))
-        .foregroundColor(.white)
+      Text("s2vids Dashboard")
+        .font(.title2)
+        .fontWeight(.bold)
       Spacer()
 
+      if !hasAccess && !effectiveIsAdmin {
+        Button {
+          vm.showGettingStarted = true
+        } label: {
+          Label("Help", systemImage: "questionmark.circle")
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Capsule())
+        }
+      }
+
+      Button {
+        vm.showAnnouncements = true
+      } label: {
+        Image(systemName: "megaphone")
+          .padding(8)
+          .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Circle())
+          .overlay(alignment: .topTrailing) {
+            if vm.hasNewAnnouncements {
+              Circle().fill(Color.red)
+                .frame(width: 8, height: 8)
+                .offset(x: 4, y: -4)
+            }
+          }
+      }
+
+      Menu {
+        Button("Donate") { vm.showDonate = true }
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .padding(8)
+          .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Circle())
+      }
+
+      // User dropdown (overlay; no layout shift)
       UserMenuButton(
         email: email,
         isAdmin: effectiveIsAdmin,
-        onRequireAccess: { showGettingStarted = true },
-        onLogout: {
-          UserDefaults.standard.removeObject(forKey: "s2vids:favorites:\(email.isEmpty ? "anon" : email)")
-          UserDefaults.standard.removeObject(forKey: "s2vids:progress:\(email.isEmpty ? "anon" : email)")
-          NotificationCenter.default.post(name: Notification.Name("S2VidsDidLogout"), object: nil)
-        },
-        onOpenSettings: { showSettings = true },
-        onOpenMovies: { dismiss() },
-        onOpenDiscover: { },
-        onOpenTvShows: {
-          dismiss()
-          NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
-        },
-        onOpenAdmin: {                    // ✅ NEW
-          dismiss()
-          NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil)
-        }
+        onRequireAccess: { vm.showGettingStarted = true },
+        onLogout: { /* hook up to your logout */ },
+        onOpenSettings: { showSettings = true },   // open Settings
+        onOpenMovies: { showMovies = true },       // open Movies
+        onOpenDiscover: { showDiscover = true },   // open Discover
+        onOpenTvShows: { showTvShows = true },     // open TV Shows
+        onOpenAdmin: { showAdmin = true }          // ✅ open Admin
       )
     }
-    .zIndex(10_000) // keep menu above everything if a popup appears
+    .foregroundColor(.white)
+    .zIndex(10_000) // keep menu above posters
   }
 
-  // MARK: Search Bar
+  // MARK: Carousels / Poster
 
-  private var searchBar: some View {
-    HStack(spacing: 8) {
-      TextField("Search movies…", text: $query)
-        .textInputAutocapitalization(.never)
-        .disableAutocorrection(true)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10)
-        .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
-        .foregroundColor(.white)
-        .onSubmit {
-          page = 1
-          fetchPage()
-        }
-      if !query.isEmpty {
-        Button("Clear") { query = ""; page = 1; fetchPage() }
-          .buttonStyle(MoviesSecondaryButtonStyle())
-      }
-    }
+  struct PosterItem: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let year: Int?
+    let poster: String
   }
 
-  // MARK: Pagination (top & bottom)
+  private func carousel(
+    title: String,
+    loading: Bool,
+    emptyText: String,
+    items: [PosterItem],
+    onPlay: @escaping (_ title: String, _ year: Int?) -> Void,
+    onInfo: @escaping (_ title: String, _ year: Int?) -> Void
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title).font(.headline).fontWeight(.bold)
 
-  private var paginationBar: some View {
-    HStack {
-      Button("First") { if page > 1 { page = 1; fetchPage() } }
-        .buttonStyle(MoviesSecondaryButtonStyle())
-        .disabled(loading || page <= 1)
-
-      Button("Prev") { if page > 1 { page -= 1; fetchPage() } }
-        .buttonStyle(MoviesSecondaryButtonStyle())
-        .disabled(loading || page <= 1)
-
-      Spacer()
-      Text(loading ? "Loading…" : "Page \(page) of \(totalPages) • \(totalResults) results")
-        .font(.caption)
-        .foregroundColor(.white.opacity(0.8))
-      Spacer()
-
-      Button("Next") { if page < totalPages { page += 1; fetchPage() } }
-        .buttonStyle(MoviesSecondaryButtonStyle())
-        .disabled(loading || page >= totalPages)
-
-      Button("Last") { if page < totalPages { page = totalPages; fetchPage() } }
-        .buttonStyle(MoviesSecondaryButtonStyle())
-        .disabled(loading || page >= totalPages)
-    }
-  }
-
-  // MARK: Grid (adaptive — no GeometryReader, no zIndex)
-
-  private var gridSection: some View {
-    Group {
-      if let e = errText {
-        Text(e).foregroundColor(.red)
-      }
-      if items.isEmpty && !loading {
-        Text("No titles found.").foregroundColor(.white.opacity(0.85))
+      if loading {
+        Text("Loading…").foregroundColor(.secondary)
+      } else if items.isEmpty {
+        Text(emptyText).foregroundColor(.secondary)
       } else {
-        let columns = [GridItem(.adaptive(minimum: 118), spacing: 12)]
-        LazyVGrid(columns: columns, spacing: 12) {
-          ForEach(items) { it in
-            let pureTitle = (it.title ?? it.name ?? "Unknown").trimmingCharacters(in: .whitespaces)
-            let display = displayTitle(it)
-            let requested = requestedIds.contains(it.id)
-            let maybeStream = streamFor(it)
-            let canWatch = requested && (maybeStream != nil)
-
-            VStack(alignment: .leading, spacing: 6) {
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 12) {
+            ForEach(items) { it in
               ZStack {
-                AsyncImage(url: posterURL(for: it)) { phase in
+                AsyncImage(url: URL(string: it.poster)) { phase in
                   switch phase {
                   case .success(let img):
-                    img.resizable().scaledToFill()
+                    img.resizable()
+                      .aspectRatio(2/3, contentMode: .fill)
+                      .frame(width: 140, height: 210)
+                      .clipped()
                   case .failure(_):
-                    Color.gray.opacity(0.25)
-                      .overlay(Image(systemName: "film").font(.title2).foregroundColor(.white.opacity(0.6)))
+                    Color.gray.frame(width: 140, height: 210)
                   case .empty:
-                    Color.black.opacity(0.2)
+                    Color.black.opacity(0.2).frame(width: 140, height: 210)
                   @unknown default:
-                    Color.gray.opacity(0.25)
+                    Color.gray.frame(width: 140, height: 210)
                   }
                 }
-                .frame(height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                VStack {
-                  HStack {
-                    Spacer()
-                    Button { openInfo(it) } label: {
-                      Image(systemName: "ellipsis")
-                        .foregroundColor(.white)
-                        .padding(8)
-                        .background(.black.opacity(0.6), in: Circle())
-                    }
-                  }
-                  Spacer()
-                }
-                .padding(6)
-              }
-
-              Text(display)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-              if canWatch {
-                Button { openPlayer(title: pureTitle, urlString: maybeStream!) } label: {
-                  Text("Watch").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-              } else {
                 Button {
-                  Task { await request(it) }
+                  onPlay(it.title, it.year)
                 } label: {
-                  Text(requested ? "✅ Requested"
-                       : (loadingId == it.id ? "Requesting…"
-                          : (hasAccess || effectiveIsAdmin ? "Request" : "Subscribe to Request")))
-                    .frame(maxWidth: .infinity)
+                  Image(systemName: "play.fill")
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(.black.opacity(0.60), in: Circle())
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(requested || loadingId == it.id || !(hasAccess || effectiveIsAdmin))
               }
+              .overlay(alignment: .bottomTrailing) {
+                Button {
+                  onInfo(it.title, it.year)
+                } label: {
+                  Image(systemName: "ellipsis")
+                    .foregroundColor(.white)
+                    .padding(8)
+                    .background(.black.opacity(0.60), in: Circle())
+                }
+                .padding(8)
+              }
+              .overlay(alignment: .bottomLeading) {
+                Text(it.title)
+                  .font(.caption)
+                  .lineLimit(2)
+                  .frame(width: 120, alignment: .leading)
+                  .padding(8)
+              }
+              .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
             }
-            .background(Color.clear)
           }
+          .padding(.vertical, 2)
         }
       }
     }
+    .padding(.top, 4)
   }
 
-  // MARK: Info / Player Helpers
-
-  private func openInfo(_ it: DiscoverItem) {
-    let y = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
-    infoTitle = it.title ?? it.name ?? "Unknown"
-    infoYear = Int(y)
-    infoOpen = true
-  }
-
-  private func openPlayer(title: String, urlString: String) {
-    guard let u = URL(string: urlString) else { return }
-    currentStreamURL = u
-    player = AVPlayer(url: u)
-    playerOpen = true
-    player?.play()
-  }
-
-  private func closePlayer() {
-    player?.pause()
-    player = nil
-    playerOpen = false
-  }
-
-  // MARK: Networking
-
-  private func fetchPage() {
-    loading = true
-    errText = nil
-    Task {
-      defer { loading = false }
-      do {
-        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/discover"),
-                                  resolvingAgainstBaseURL: false)!
-        comps.queryItems = [ .init(name: "page", value: String(page)) ]
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !q.isEmpty {
-          comps.queryItems?.append(.init(name: "query", value: q)) // let URLComponents encode
-        }
-
-        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-        let decoded = try JSONDecoder().decode(DiscoverResponse.self, from: data)
-        items = decoded.results ?? []
-        totalPages = max(1, decoded.totalPages ?? 1)
-        totalResults = max(0, decoded.totalResults ?? items.count)
-      } catch {
-        items = []
-        totalPages = 1
-        totalResults = 0
-        errText = "Failed to load discover."
-      }
-    }
-  }
-
-  /// Submit a Jellyseerr request; only allowed for active/trial/admin.
-  private func request(_ it: DiscoverItem) async {
-    guard hasAccess || effectiveIsAdmin else {
-      showGettingStarted = true
-      return
-    }
-    loadingId = it.id
-    defer { loadingId = nil }
-    do {
-      var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/request"))
-      req.httpMethod = "POST"
-      req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-      let mediaId = it.id
-      let mediaType = it.mediaType ?? "movie"
-      let title = (it.title ?? it.name ?? "Unknown")
-      req.httpBody = try JSONSerialization.data(withJSONObject: [
-        "mediaId": mediaId,
-        "mediaType": mediaType,
-        "title": title
-      ])
-
-      let (data, resp) = try await URLSession.shared.data(for: req)
-      guard let http = resp as? HTTPURLResponse else { return }
-
-      let text = String(data: data, encoding: .utf8) ?? ""
-      var json: [String: Any] = [:]
-      if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-        json = obj
-      }
-
-      if http.statusCode == 409 {
-        requestedIds.insert(it.id)
-        return
-      }
-
-      guard (200...299).contains(http.statusCode) else {
-        print("Request failed (\(http.statusCode)): \(json["error"] as? String ?? text)")
-        return
-      }
-
-      requestedIds.insert(it.id)
-    } catch {
-      print("Fatal request error: \(error)")
-    }
-  }
-
-  private func loadRequestedIds() {
-    Task {
-      var acc = Set<Int>()
-      let pageSize = 100
-      for page in 0..<200 {
-        do {
-          var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/requests"),
-                                    resolvingAgainstBaseURL: false)!
-          comps.queryItems = [
-            .init(name: "filter", value: "all"),
-            .init(name: "take", value: String(pageSize)),
-            .init(name: "skip", value: String(page * pageSize))
-          ]
-          let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-          guard (resp as? HTTPURLResponse)?.statusCode == 200 else { break }
-
-          let any = try JSONSerialization.jsonObject(with: data)
-          var arr: [[String: Any]] = []
-          if let dict = any as? [String: Any], let r = dict["results"] as? [[String: Any]] {
-            arr = r
-          } else if let r = any as? [[String: Any]] {
-            arr = r
-          }
-
-          if arr.isEmpty { break }
-          for o in arr {
-            if let a = (o["media"] as? [String: Any])?["tmdbId"] as? Int { acc.insert(a) }
-            if let b = (o["mediaInfo"] as? [String: Any])?["tmdbId"] as? Int { acc.insert(b) }
-            if let c = o["tmdbId"] as? Int { acc.insert(c) }
-          }
-          if arr.count < pageSize { break }
-        } catch { break }
-      }
-      self.requestedIds = acc
-    }
-  }
-
-  private func loadLibrary() {
-    Task {
-      do {
-        let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
-        let (data, resp) = try await URLSession.shared.data(from: url)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let list = try JSONDecoder().decode([Movie].self, from: data)
-        library = list
-      } catch {
-        library = []
-      }
-    }
-  }
-
-  private func bootstrapAccess() {
-    guard !email.isEmpty else { accessResolved = true; return }
-    Task {
-      defer { accessResolved = true }
-      do {
-        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
-                                  resolvingAgainstBaseURL: false)!
-        comps.queryItems = [ .init(name: "email", value: email) ]
-        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
-        let status = (s?.status ?? "")
-        let active = (s?.active ?? false)
-        let trialEnd = (s?.trial_end ?? 0)
-        resolvedStatus = active ? "active" : status
-        resolvedTrialing = (status == "trialing") || trialEnd > 0
-      } catch { }
-    }
-  }
-
-  // MARK: - Helpers
-
-  private func streamFor(_ it: DiscoverItem) -> String? {
-    let target = canonical((it.title ?? it.name ?? ""))
-    guard !target.isEmpty else { return nil }
-    let wantYear: Int? = {
-      if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      return nil
-    }()
-
-    if let y = wantYear,
-       let exactY = library.first(where: { canonical($0.title) == target && ($0.year ?? -1) == y }) {
-      return exactY.streamUrl
-    }
-    if let exact = library.first(where: { canonical($0.title) == target }) { return exact.streamUrl }
-    if let starts = library.first(where: { canonical($0.title).hasPrefix(target) }) { return starts.streamUrl }
-    if let contains = library.first(where: { canonical($0.title).contains(target) }) { return contains.streamUrl }
-    return nil
-  }
-
-  private func displayTitle(_ it: DiscoverItem) -> String {
-    let base = (it.title ?? it.name ?? "Unknown")
-    let year = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
-    return year.isEmpty ? base : "\(base) (\(year))"
-  }
-
-  private func posterURL(for it: DiscoverItem) -> URL? {
-    if let p = it.posterPath, !p.isEmpty {
-      if p.hasPrefix("http") { return URL(string: p) }
-      return URL(string: "https://image.tmdb.org/t/p/w342\(p.hasPrefix("/") ? p : "/\(p)")")
-    }
-    return posterURL(forTitle: (it.title ?? it.name ?? ""), year: {
-      if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-      return nil
-    }())
-  }
-
-  private func posterURL(forTitle title: String, year: Int?) -> URL? {
+  private func posterURL(for title: String, year: Int?) -> String {
     var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
                           resolvingAgainstBaseURL: false)!
     var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
     if let y = year { q.append(.init(name: "y", value: String(y))) }
     c.queryItems = q
-    return c.url
+    return c.string ?? ""
   }
 
-  private func canonical(_ s: String) -> String {
-    var t = s.lowercased()
-    t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
-    t = t.replacingOccurrences(of: "&", with: " and ")
-    for ch in [":", "-", "–", "—", "_", "/", ".", ",", "!", "?", "(", ")", "\""] {
-      t = t.replacingOccurrences(of: ch, with: " ")
+  // MARK: Actions
+
+  private func playOrShowOnboarding(title: String, year: Int?) {
+    guard hasAccess else {
+      vm.playerOpen = false
+      vm.showGettingStarted = true
+      return
     }
-    while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
-    t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-    for art in ["the ", "a ", "an "] { if t.hasPrefix(art) { t = String(t.dropFirst(art.count)); break } }
-    return t
+    openByTitle(title, year: year)
+  }
+
+  private func showInfo(_ title: String, year: Int?) {
+    infoPayload = .init(title: title, year: year, posterURL: posterURL(for: title, year: year))
+  }
+
+  private func openByTitle(_ title: String, year: Int?) {
+    guard hasAccess else {
+      vm.showGettingStarted = true
+      return
+    }
+    Task {
+      do {
+        let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
+        let (data, resp) = try await URLSession.shared.data(from: url)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+        let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+        let simp = title.lowercased()
+
+        let match = arr.first(where: {
+          guard let t = $0["title"] as? String else { return false }
+          return t.lowercased() == simp
+        }) ?? arr.first(where: {
+          guard let t = $0["title"] as? String else { return false }
+          return t.lowercased().contains(simp)
+        })
+
+        guard let m = match,
+              let stream = m["streamUrl"] as? String,
+              let streamURL = URL(string: stream)
+        else { return }
+
+        vm.openPlayer(title: title, streamURL: streamURL)
+      } catch { }
+    }
   }
 }
 
-// MARK: - Local helpers reused from MoviesView
+// MARK: - Movie Info Sheet (OMDb)
 
-private struct MoviesDetentsCompatMediumLarge: ViewModifier {
+struct MovieInfoSheet: View {
+  let title: String
+  let year: Int?
+  let posterURL: String
+
+  @State private var plot: String = "Loading info..."
+  @State private var rating: String = ""
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationView {
+      ScrollView {
+        VStack(spacing: 16) {
+          AsyncImage(url: URL(string: posterURL)) { img in
+            img.resizable().scaledToFit()
+          } placeholder: {
+            Color.gray.opacity(0.2)
+          }
+          .frame(height: 280)
+
+          Text("\(title)\(year != nil ? " (\(year!))" : "")")
+            .font(.headline)
+            .multilineTextAlignment(.center)
+
+          if !rating.isEmpty {
+            Text("⭐️ IMDb \(rating)")
+              .font(.subheadline)
+              .foregroundColor(.yellow)
+          }
+
+          Text(plot)
+            .font(.body)
+            .multilineTextAlignment(.leading)
+            .padding(.top, 4)
+
+          if let imdbURL = imdbURL {
+            Link("View on IMDb", destination: imdbURL)
+              .buttonStyle(.bordered)
+              .padding(.top, 6)
+          }
+
+          Spacer()
+        }
+        .padding()
+      }
+      .navigationTitle("Info")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button("Close") { dismiss() }
+        }
+      }
+      .task { await loadInfo() }
+    }
+  }
+
+  private var imdbURL: URL? {
+    if let id = cachedImdbID { return URL(string: "https://www.imdb.com/title/\(id)/") }
+    return URL(string: "https://www.imdb.com/find?q=\(title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")
+  }
+
+  @State private var cachedImdbID: String?
+
+  private func loadInfo() async {
+    guard let base = URL(string: "https://www.omdbapi.com/") else { return }
+    var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+    components.queryItems = [
+      .init(name: "apikey", value: AppConfig.omdbKey),
+      .init(name: "t", value: title),
+      .init(name: "plot", value: "full")
+    ]
+    if let y = year { components.queryItems?.append(.init(name: "y", value: String(y))) }
+
+    do {
+      let (data, _) = try await URLSession.shared.data(from: components.url!)
+      if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        plot = (obj["Plot"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "No plot available."
+        rating = obj["imdbRating"] as? String ?? ""
+        cachedImdbID = obj["imdbID"] as? String
+      } else {
+        plot = "Unable to fetch movie details."
+      }
+    } catch {
+      plot = "Failed to load movie information."
+    }
+  }
+}
+
+// MARK: - Simple Sheets (iOS 15+ friendly)
+
+struct GettingStartedSheet: View {
+  var showNoSubNotice: Bool
+  var onClose: () -> Void
+
+  var body: some View {
+    NavigationView {
+      VStack(alignment: .leading, spacing: 12) {
+        if showNoSubNotice {
+          Text("You currently have no active subscription.")
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.red.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
+        }
+        Text("Getting started").font(.headline).fontWeight(.bold)
+        Group {
+          Text("1. Select Subscribe.")
+          Text("2. After subscribing, return here and refresh the page.")
+          Text("3. Create your Jellyfin account and set a password.")
+          Text("4. Open the menu (top right) and Launch Jellyfin.")
+          Text("5. Sign in with your email and password.")
+        }
+        .foregroundColor(.secondary)
+
+        Link("Subscribe",
+             destination: URL(string: "https://buy.stripe.com/aFa14o8B758CeTnfrjfw406")!)
+          .buttonStyle(.borderedProminent)
+
+        Spacer()
+      }
+      .padding()
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) { Button("Close", action: onClose) }
+      }
+    }
+  }
+}
+
+struct AnnouncementsSheet: View {
+  var isAdmin: Bool
+  var onClose: () -> Void
+  @State private var items: [[String:Any]] = []
+  @State private var loading = true
+
+  var body: some View {
+    NavigationView {
+      Group {
+        if loading {
+          ProgressView("Loading…")
+        } else if items.isEmpty {
+          Text("No announcements yet.").foregroundColor(.secondary)
+        } else {
+          List {
+            ForEach(0..<items.count, id: \.self) { i in
+              let a = items[i]
+              VStack(alignment: .leading, spacing: 6) {
+                Text((a["message"] as? String) ?? "—")
+                Text((a["author"] as? String) ?? "Admin")
+                  .font(.caption)
+                  .foregroundColor(.secondary)
+              }
+              .listRowBackground(Color(red:0.08, green:0.10, blue:0.17))
+            }
+          }
+          .listStyle(.plain)
+        }
+      }
+      .padding(.horizontal, 8)
+      .navigationTitle("Announcements")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button("Close", action: onClose)
+        }
+      }
+      .task { await load() }
+    }
+  }
+
+  func load() async {
+    loading = true
+    defer { loading = false }
+    let url = AppConfig.apiBase.appendingPathComponent("api/announcement")
+    do {
+      let (data, resp) = try await URLSession.shared.data(from: url)
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+      let arr = try JSONSerialization.jsonObject(with: data) as? [[String:Any]] ?? []
+      items = arr
+    } catch { items = [] }
+  }
+}
+
+// MARK: - Detents Compatibility Helpers (iOS 16+ only; safe on iOS 15)
+
+private struct DetentsCompatMediumLarge: ViewModifier {
   func body(content: Content) -> some View {
     if #available(iOS 16.0, *) {
       content.presentationDetents([.medium, .large])
-    } else { content }
+    } else {
+      content
+    }
   }
 }
 
-private struct MoviesSecondaryButtonStyle: ButtonStyle {
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .padding(.horizontal, 12).padding(.vertical, 7)
-      .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.3)))
-      .opacity(configuration.isPressed ? 0.8 : 1.0)
+private struct DetentsCompatLarge: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(iOS 16.0, *) {
+      content.presentationDetents([.large])
+    } else {
+      content
+    }
+  }
+}
+
+// MARK: - User Dropdown (with Movies, Discover & TV Shows & Admin callbacks)
+
+struct UserMenuButton: View {
+  let email: String
+  let isAdmin: Bool
+  let onRequireAccess: () -> Void
+  let onLogout: () -> Void
+  let onOpenSettings: () -> Void
+  let onOpenMovies: () -> Void
+  let onOpenDiscover: () -> Void
+  let onOpenTvShows: () -> Void
+  let onOpenAdmin: () -> Void          // ✅ NEW
+
+  @State private var open = false
+  @State private var hasAccess = false
+  @State private var loading = false
+  @State private var errorText: String?
+
+  @Environment(\.openURL) private var openURL
+
+  var body: some View {
+    Button {
+      toggleOpen()
+    } label: {
+      Image(systemName: "person.circle.fill")
+        .font(.system(size: 26, weight: .regular))
+        .foregroundColor(.white)
+        .frame(width: 32, height: 32)
+    }
+    .buttonStyle(.plain)
+    .overlay(alignment: .topTrailing) {
+      if open {
+        VStack(spacing: 0) {
+          HStack {
+            Text(email.isEmpty ? "Signed in" : email)
+              .font(.footnote)
+              .foregroundColor(.gray)
+              .lineLimit(1)
+              .truncationMode(.tail)
+            Spacer()
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .background(Color.black.opacity(0.25))
+
+          Divider().background(Color.gray.opacity(0.4))
+
+          VStack(spacing: 0) {
+            Row(icon: "rectangle.grid.2x2", title: "Dashboard") { open = false }
+            Row(icon: "safari", title: "Discover") {
+              open = false
+              onOpenDiscover()
+            }
+
+            Row(icon: "film", title: "Movies") {
+              open = false
+              onOpenMovies()
+            }
+
+            Row(icon: "tv", title: "TV Shows") {
+              open = false
+              onOpenTvShows()
+            }
+            Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
+            Row(icon: "calendar", title: "TV Show Calendar") { open = false }
+
+            Row(icon: "arrow.up.right.square", title: "Launch Jellyfin") {
+              goOrWarn { openURL(URL(string: "https://atlas.s2vids.org/")!) }
+            }
+            Row(icon: "arrow.up.right.square", title: "Request Media") {
+              goOrWarn { openURL(URL(string: "https://req.s2vids.org/")!) }
+            }
+            Row(icon: "arrow.up.right.square", title: "Join Discord") {
+              openURL(URL(string: "https://discord.gg/cw6rQzx5Bx")!)
+            }
+
+            Row(icon: "gear", title: "Settings") {
+              open = false
+              onOpenSettings()
+            }
+
+            // ✅ Only visible to admins; opens AdminView when tapped
+            if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
+              Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) {
+                open = false
+                onOpenAdmin()
+              }
+            }
+
+            Row(icon: "arrow.backward.square", title: "Log Out", tint: .red) {
+              open = false
+              onLogout()
+            }
+          }
+
+          if loading || errorText != nil {
+            Divider().background(Color.gray.opacity(0.4))
+            HStack(spacing: 8) {
+              if loading { ProgressView().scaleEffect(0.6) }
+              Text(loading ? "Checking subscription…" : (errorText ?? ""))
+                .font(.caption)
+                .foregroundColor(.gray)
+              Spacer()
+            }
+            .padding(10)
+          }
+        }
+        .frame(width: 230)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0.09, green: 0.11, blue: 0.17)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.35)))
+        .offset(y: 36)
+        .zIndex(100_000)
+        .transition(.scale(scale: 0.95).combined(with: .opacity))
+      }
+    }
+  }
+
+  private func Row(icon: String, title: String, tint: Color? = nil, action: @escaping () -> Void) -> some View {
+    Button(action: { action() }) {
+      HStack(spacing: 10) {
+        Image(systemName: icon).frame(width: 16)
+        Text(title).font(.subheadline)
+        Spacer()
+      }
+      .foregroundColor(tint ?? .white)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 10)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func toggleOpen() {
+    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+      open.toggle()
+    }
+    if open { Task { await checkStripeAccess() } }
+  }
+
+  private func goOrWarn(_ go: () -> Void) {
+    if hasAccess || isAdmin || email.lowercased() == "mspiri2@outlook.com" {
+      go()
+    } else {
+      onRequireAccess()
+    }
+  }
+
+  private func statusAllowsAccess(_ status: String) -> Bool {
+    let s = status.lowercased()
+    return s == "active" || s == "trialing"
+  }
+
+  private func checkStripeAccess() async {
+    guard !email.isEmpty else { hasAccess = false; return }
+    loading = true
+    errorText = nil
+    defer { loading = false }
+
+    do {
+      var comps = URLComponents(
+        url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+        resolvingAgainstBaseURL: false
+      )!
+      comps.queryItems = [ URLQueryItem(name: "email", value: email) ]
+
+      let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+      guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+        hasAccess = false
+        errorText = "Unable to check subscription."
+        return
+      }
+      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+      let status = (obj?["status"] as? String) ?? ""
+      let activeFlag = (obj?["active"] as? Bool) ?? false
+      hasAccess = activeFlag || statusAllowsAccess(status)
+    } catch {
+      hasAccess = false
+      errorText = "Network error."
+    }
   }
 }
