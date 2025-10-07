@@ -112,7 +112,7 @@ struct SettingsView: View {
   private var header: some View {
     HStack(spacing: 12) {
       Text("Settings")
-        .font(.system(size: 22, weight: .bold)) // iOS15-safe bold
+        .font(.system(size: 22, weight: .bold))
         .foregroundColor(.white)
       Spacer()
       UserMenuButton(
@@ -120,7 +120,30 @@ struct SettingsView: View {
         isAdmin: isAdmin,
         onRequireAccess: { },
         onLogout: { /* hook logout */ },
-        onOpenSettings: { /* already here */ }
+        onOpenSettings: { /* already here */ },
+        onOpenMovies: {
+          // Go back to Dashboard and let it open Movies
+          dismiss()
+          NotificationCenter.default.post(
+            name: Notification.Name("S2OpenMovies"),
+            object: nil
+          )
+        },
+        onOpenDiscover: {
+          dismiss()
+          NotificationCenter.default.post(
+            name: Notification.Name("S2OpenDiscover"),
+            object: nil
+          )
+        },
+        onOpenTvShows: {
+          // ✅ NEW: route to TV Shows from Settings
+          dismiss()
+          NotificationCenter.default.post(
+            name: Notification.Name("S2OpenTvShows"),
+            object: nil
+          )
+        }
       )
     }
     .zIndex(10_000)
@@ -133,7 +156,7 @@ struct SettingsView: View {
         .font(.subheadline)
       Text(email.isEmpty ? "—" : email)
         .foregroundColor(.white)
-        .font(.system(size: 15, weight: .bold)) // bold
+        .font(.system(size: 15, weight: .bold))
       Spacer()
     }
     .padding(.vertical, 10)
@@ -161,7 +184,7 @@ struct SettingsView: View {
   private func jellyfinPanelView() -> some View {
     sectionContainer {
       Text("Jellyfin Access")
-        .font(.system(size: 17, weight: .bold)) // headline bold
+        .font(.system(size: 17, weight: .bold))
         .foregroundColor(.white)
 
       labeledRow("Username") {
@@ -212,11 +235,11 @@ struct SettingsView: View {
         Image(systemName: "person.crop.circle.badge.checkmark")
         Text("Discord")
       }
-      .font(.system(size: 17, weight: .bold)) // headline bold
+      .font(.system(size: 17, weight: .bold))
       .foregroundColor(.white)
 
       Text("Discord Username")
-        .font(.system(size: 13, weight: .bold)) // footnote bold
+        .font(.system(size: 13, weight: .bold))
         .foregroundColor(Color(red: 0.55, green: 0.78, blue: 0.96))
 
       HStack(spacing: 8) {
@@ -241,11 +264,11 @@ struct SettingsView: View {
     sectionContainer {
       HStack {
         Text("Invite Codes")
-          .font(.system(size: 17, weight: .bold)) // headline bold
+          .font(.system(size: 17, weight: .bold))
           .foregroundColor(.white)
         Spacer()
         Text("\(invitesAvailable) left this month")
-          .font(.system(size: 12, weight: .bold)) // caption bold
+          .font(.system(size: 12, weight: .bold))
           .foregroundColor(Color(red: 0.55, green: 0.78, blue: 0.96))
       }
 
@@ -310,7 +333,7 @@ struct SettingsView: View {
   private func accountPanelView() -> some View {
     sectionContainer {
       Text("Account")
-        .font(.system(size: 17, weight: .bold)) // headline bold
+        .font(.system(size: 17, weight: .bold))
         .foregroundColor(.white)
 
       labeledRow("Account Created") {
@@ -323,7 +346,7 @@ struct SettingsView: View {
           Image(systemName: "envelope.fill")
           Text("Email")
         }
-        .font(.system(size: 15, weight: .bold)) // subheadline bold
+        .font(.system(size: 15, weight: .bold))
         .foregroundColor(.white)
 
         Text("Current: \(email)")
@@ -351,7 +374,7 @@ struct SettingsView: View {
           Image(systemName: "lock.fill")
           Text("Change Password")
         }
-        .font(.system(size: 15, weight: .bold)) // subheadline bold
+        .font(.system(size: 15, weight: .bold))
         .foregroundColor(.white)
 
         SecureField("Current Password", text: $currentPassword)
@@ -391,7 +414,7 @@ struct SettingsView: View {
           VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
               Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
-              Text("Delete Account").font(.system(size: 17, weight: .bold)) // headline bold
+              Text("Delete Account").font(.system(size: 17, weight: .bold))
             }
             Text("This will permanently delete your account and sign you out. This action cannot be undone.")
               .font(.subheadline)
@@ -429,7 +452,7 @@ struct SettingsView: View {
   private func labeledRow(_ label: String, content: () -> Text) -> some View {
     HStack {
       Text(label)
-        .font(.system(size: 13, weight: .bold)) // footnote bold
+        .font(.system(size: 13, weight: .bold))
         .foregroundColor(Color(red: 0.55, green: 0.78, blue: 0.96))
       Spacer()
       content()
@@ -438,14 +461,14 @@ struct SettingsView: View {
 
   private func primaryButton(_ title: String, action: @escaping () async -> Void) -> some View {
     Button { Task { await action() } } label: {
-      Text(title).font(.system(size: 13, weight: .bold)) // footnote bold
+      Text(title).font(.system(size: 13, weight: .bold))
     }
     .buttonStyle(PrimaryButtonStyle())
   }
 
   private func destructiveButton(_ title: String, action: @escaping () async -> Void) -> some View {
     Button { Task { await action() } } label: {
-      Text(title).font(.system(size: 13, weight: .bold)) // footnote bold
+      Text(title).font(.system(size: 13, weight: .bold))
     }
     .buttonStyle(DestructiveButtonStyle())
   }
