@@ -1,4 +1,3 @@
-
 //
 //  DashboardView.swift
 //  s2vids
@@ -37,7 +36,7 @@ struct DashboardView: View {
   @State private var showMovies = false
   @State private var showDiscover = false
   @State private var showTvShows = false
-  @State private var showAdmin = false                 // ✅ NEW
+  @State private var showAdmin = false                 // ✅
 
   // Hardcoded admin email override + prop
   private var effectiveIsAdmin: Bool {
@@ -92,14 +91,15 @@ struct DashboardView: View {
         .padding(.top, 16)
         .padding(.bottom, 40)
       }
+      // ⬇️ Pull-to-refresh
+      .refreshable {
+        await refreshDashboard()
+      }
     }
     .preferredColorScheme(.dark)
-    .onAppear {
-      vm.bootstrap(email: email,
-                   isAdmin: effectiveIsAdmin,
-                   subscriptionStatus: subscriptionStatus,
-                   isTrialing: isTrialing)
-      resolveAccess()
+    // Run initial load via the same async path used by refresh
+    .task {
+      await initialBootstrap()
     }
 
     // Getting Started
@@ -176,7 +176,7 @@ struct DashboardView: View {
       )
     }
 
-    // ✅ Admin page (opened from dropdown)
+    // Admin page (opened from dropdown)
     .fullScreenCover(isPresented: $showAdmin) {
       AdminView(email: email)
     }
@@ -187,35 +187,67 @@ struct DashboardView: View {
   private var effectiveTrialing: Bool { accessResolved ? resolvedTrialing : isTrialing }
   private var hasAccess: Bool { effectiveTrialing || effectiveStatus == "active" || effectiveIsAdmin }
 
-  private func resolveAccess() {
-    guard !email.isEmpty else { return }
-    Task {
-      do {
-        var comps = URLComponents(
-          url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
-          resolvingAgainstBaseURL: false
-        )!
-        comps.queryItems = [URLQueryItem(name: "email", value: email)]
-        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        if (resp as? HTTPURLResponse)?.statusCode == 200,
-           let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-          let status = (obj["status"] as? String) ?? ""
-          let active = (obj["active"] as? Bool) ?? false
-          let trialEnd = (obj["trial_end"] as? Int) ?? 0
+  // MARK: - Bootstrap / Refresh
+
+  private func initialBootstrap() async {
+    await MainActor.run {
+      vm.bootstrap(email: email,
+                   isAdmin: effectiveIsAdmin,
+                   subscriptionStatus: subscriptionStatus,
+                   isTrialing: isTrialing)
+    }
+    await resolveAccessAsync()
+  }
+
+  private func refreshDashboard() async {
+    // Re-run VM bootstrap to refetch lists, then re-check access from Stripe
+    await MainActor.run {
+      vm.bootstrap(email: email,
+                   isAdmin: effectiveIsAdmin,
+                   subscriptionStatus: subscriptionStatus,
+                   isTrialing: isTrialing)
+    }
+    await resolveAccessAsync()
+  }
+
+  private func resolveAccessAsync() async {
+    guard !email.isEmpty else {
+      await MainActor.run { accessResolved = true }
+      return
+    }
+    do {
+      var comps = URLComponents(
+        url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+        resolvingAgainstBaseURL: false
+      )!
+      comps.queryItems = [URLQueryItem(name: "email", value: email)]
+      let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+      if (resp as? HTTPURLResponse)?.statusCode == 200,
+         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        let status = (obj["status"] as? String) ?? ""
+        let active = (obj["active"] as? Bool) ?? false
+        let trialEnd = (obj["trial_end"] as? Int) ?? 0
+        await MainActor.run {
           resolvedStatus = active ? "active" : status
           resolvedTrialing = (status == "trialing") || trialEnd > 0
-        } else {
+          accessResolved = true
+          if !hasAccess {
+            vm.playerOpen = false
+            vm.showGettingStarted = true
+          }
+        }
+      } else {
+        await MainActor.run {
           resolvedStatus = ""
           resolvedTrialing = false
+          accessResolved = true
         }
-      } catch {
+      }
+    } catch {
+      await MainActor.run {
         resolvedStatus = ""
         resolvedTrialing = false
-      }
-      accessResolved = true
-      if !hasAccess {
-        vm.playerOpen = false
-        vm.showGettingStarted = true
+        accessResolved = true
       }
     }
   }
@@ -273,7 +305,7 @@ struct DashboardView: View {
         onOpenMovies: { showMovies = true },       // open Movies
         onOpenDiscover: { showDiscover = true },   // open Discover
         onOpenTvShows: { showTvShows = true },     // open TV Shows
-        onOpenAdmin: { showAdmin = true }          // ✅ open Admin
+        onOpenAdmin: { showAdmin = true }          // open Admin
       )
     }
     .foregroundColor(.white)
@@ -635,7 +667,7 @@ struct UserMenuButton: View {
   let onOpenMovies: () -> Void
   let onOpenDiscover: () -> Void
   let onOpenTvShows: () -> Void
-  let onOpenAdmin: () -> Void          // ✅ NEW
+  let onOpenAdmin: () -> Void          // ✅
 
   @State private var open = false
   @State private var hasAccess = false
@@ -705,7 +737,6 @@ struct UserMenuButton: View {
               onOpenSettings()
             }
 
-            // ✅ Only visible to admins; opens AdminView when tapped
             if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
               Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) {
                 open = false
