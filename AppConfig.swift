@@ -15,9 +15,20 @@ enum AppConfig {
   static let tmdbKey = "acceb5c6c54c9a3c5739312c8dbe01cd"
   static let omdbKey = "af8a42c8"
 
-  // ⬇️ Add your media scan roots here
+  // Media scan roots
   static let moviePaths: [String] = [
     "/mnt/radarr",
     "/mnt/sonarr",
   ]
+
+  // 🔐 iOS app admins (ONLY these can open the Admin screen)
+  static let adminEmails: Set<String> = [
+    "mspiri2@outlook.com",
+    // add more here
+  ]
+
+  /// Convenience helper used by AdminView
+  static func isAdmin(email: String) -> Bool {
+    adminEmails.contains(email.lowercased())
+  }
 }
