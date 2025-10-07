@@ -194,7 +194,15 @@ struct DiscoverView: View {
         },
         onOpenSettings: { showSettings = true },
         onOpenMovies: { dismiss() },
-        onOpenDiscover: { } // ✅ added missing parameter
+        onOpenDiscover: { },
+        onOpenTvShows: {
+          // ✅ NEW: route to TV Shows from Discover
+          dismiss()
+          NotificationCenter.default.post(
+            name: Notification.Name("S2OpenTvShows"),
+            object: nil
+          )
+        }
       )
     }
     .zIndex(10_000)
@@ -483,93 +491,93 @@ struct DiscoverView: View {
         var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
                                   resolvingAgainstBaseURL: false)!
         comps.queryItems = [ .init(name: "email", value: email) ]
-          let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-          guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-          let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
-          let status = (s?.status ?? "")
-          let active = (s?.active ?? false)
-          let trialEnd = (s?.trial_end ?? 0)
-          resolvedStatus = active ? "active" : status
-          resolvedTrialing = (status == "trialing") || trialEnd > 0
-        } catch { }
-      }
+        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+        let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
+        let status = (s?.status ?? "")
+        let active = (s?.active ?? false)
+        let trialEnd = (s?.trial_end ?? 0)
+        resolvedStatus = active ? "active" : status
+        resolvedTrialing = (status == "trialing") || trialEnd > 0
+      } catch { }
     }
+  }
 
-    // MARK: - Helpers
+  // MARK: - Helpers
 
-    private func streamFor(_ it: DiscoverItem) -> String? {
-      let target = canonical((it.title ?? it.name ?? ""))
-      guard !target.isEmpty else { return nil }
-      let wantYear: Int? = {
-        if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-        if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-        return nil
-      }()
-
-      if let y = wantYear,
-         let exactY = library.first(where: { canonical($0.title) == target && ($0.year ?? -1) == y }) {
-        return exactY.streamUrl
-      }
-      if let exact = library.first(where: { canonical($0.title) == target }) { return exact.streamUrl }
-      if let starts = library.first(where: { canonical($0.title).hasPrefix(target) }) { return starts.streamUrl }
-      if let contains = library.first(where: { canonical($0.title).contains(target) }) { return contains.streamUrl }
+  private func streamFor(_ it: DiscoverItem) -> String? {
+    let target = canonical((it.title ?? it.name ?? ""))
+    guard !target.isEmpty else { return nil }
+    let wantYear: Int? = {
+      if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+      if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
       return nil
-    }
+    }()
 
-    private func displayTitle(_ it: DiscoverItem) -> String {
-      let base = (it.title ?? it.name ?? "Unknown")
-      let year = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
-      return year.isEmpty ? base : "\(base) (\(year))"
+    if let y = wantYear,
+       let exactY = library.first(where: { canonical($0.title) == target && ($0.year ?? -1) == y }) {
+      return exactY.streamUrl
     }
-
-    private func posterURL(for it: DiscoverItem) -> URL? {
-      if let p = it.posterPath, !p.isEmpty {
-        if p.hasPrefix("http") { return URL(string: p) }
-        return URL(string: "https://image.tmdb.org/t/p/w342\(p.hasPrefix("/") ? p : "/\(p)")")
-      }
-      return posterURL(forTitle: (it.title ?? it.name ?? ""), year: {
-        if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-        if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
-        return nil
-      }())
-    }
-
-    private func posterURL(forTitle title: String, year: Int?) -> URL? {
-      var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
-                            resolvingAgainstBaseURL: false)!
-      var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
-      if let y = year { q.append(.init(name: "y", value: String(y))) }
-      c.queryItems = q
-      return c.url
-    }
-
-    private func canonical(_ s: String) -> String {
-      var t = s.lowercased()
-      t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
-      t = t.replacingOccurrences(of: "&", with: " and ")
-      t = t.replacingOccurrences(of: ":", with: " ").replacingOccurrences(of: "-", with: " ")
-      while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
-      t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-      for art in ["the ", "a ", "an "] { if t.hasPrefix(art) { t = String(t.dropFirst(art.count)); break } }
-      return t
-    }
+    if let exact = library.first(where: { canonical($0.title) == target }) { return exact.streamUrl }
+    if let starts = library.first(where: { canonical($0.title).hasPrefix(target) }) { return starts.streamUrl }
+    if let contains = library.first(where: { canonical($0.title).contains(target) }) { return contains.streamUrl }
+    return nil
   }
 
-  // MARK: - Local helpers reused from MoviesView
-
-  private struct MoviesDetentsCompatMediumLarge: ViewModifier {
-    func body(content: Content) -> some View {
-      if #available(iOS 16.0, *) {
-        content.presentationDetents([.medium, .large])
-      } else { content }
-    }
+  private func displayTitle(_ it: DiscoverItem) -> String {
+    let base = (it.title ?? it.name ?? "Unknown")
+    let year = (it.releaseDate?.prefix(4) ?? it.firstAirDate?.prefix(4)) ?? ""
+    return year.isEmpty ? base : "\(base) (\(year))"
   }
 
-  private struct MoviesSecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-      configuration.label
-        .padding(.horizontal, 12).padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.3)))
-        .opacity(configuration.isPressed ? 0.8 : 1.0)
+  private func posterURL(for it: DiscoverItem) -> URL? {
+    if let p = it.posterPath, !p.isEmpty {
+      if p.hasPrefix("http") { return URL(string: p) }
+      return URL(string: "https://image.tmdb.org/t/p/w342\(p.hasPrefix("/") ? p : "/\(p)")")
     }
+    return posterURL(forTitle: (it.title ?? it.name ?? ""), year: {
+      if let s = it.releaseDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+      if let s = it.firstAirDate, s.count >= 4, let y = Int(String(s.prefix(4))) { return y }
+      return nil
+    }())
   }
+
+  private func posterURL(forTitle title: String, year: Int?) -> URL? {
+    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
+                          resolvingAgainstBaseURL: false)!
+    var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
+    if let y = year { q.append(.init(name: "y", value: String(y))) }
+    c.queryItems = q
+    return c.url
+  }
+
+  private func canonical(_ s: String) -> String {
+    var t = s.lowercased()
+    t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
+    t = t.replacingOccurrences(of: "&", with: " and ")
+    t = t.replacingOccurrences(of: ":", with: " ").replacingOccurrences(of: "-", with: " ")
+    while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
+    t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+    for art in ["the ", "a ", "an "] { if t.hasPrefix(art) { t = String(t.dropFirst(art.count)); break } }
+    return t
+  }
+}
+
+// MARK: - Local helpers reused from MoviesView
+
+private struct MoviesDetentsCompatMediumLarge: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(iOS 16.0, *) {
+      content.presentationDetents([.medium, .large])
+    } else { content }
+  }
+}
+
+private struct MoviesSecondaryButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .padding(.horizontal, 12).padding(.vertical, 7)
+      .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.3)))
+      .opacity(configuration.isPressed ? 0.8 : 1.0)
+  }
+}
