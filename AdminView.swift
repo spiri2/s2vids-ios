@@ -51,15 +51,21 @@ private struct MasterInvitePayload: Decodable {
   let error: String?
 }
 
+// ✅ Rename `Type` → `MediaType` and map from JSON key "Type"
 private struct JellyfinActivityEntry: Identifiable, Decodable {
   let Id: String
   let Name: String?
   let Overview: String?
-  let Type: String?
+  let MediaType: String?
   let Severity: String?
   let UserName: String?
   let Date: String?
   var id: String { Id }
+
+  enum CodingKeys: String, CodingKey {
+    case Id, Name, Overview, Severity, UserName, Date
+    case MediaType = "Type"
+  }
 }
 
 private struct JellyfinActivityResponse: Decodable {
@@ -296,9 +302,9 @@ struct AdminView: View {
           ForEach(jfActivity.prefix(8)) { e in
             let when = e.Date.flatMap { ISO8601DateFormatter().date(from: $0) }
             let ts = when.map { DateFormatter.localizedString(from: $0, dateStyle: .short, timeStyle: .short) } ?? ""
-            Text("• \((e.Overview ?? e.Name ?? e.Type ?? "Activity").trimmingCharacters(in: .whitespaces))")
+            Text("• \((e.Overview ?? e.Name ?? e.MediaType ?? "Activity").trimmingCharacters(in: .whitespaces))")
               .font(.caption).foregroundColor(.white)
-            Text("\(e.UserName ?? "") \(e.Type ?? "")  \(ts)")
+            Text("\(e.UserName ?? "") \(e.MediaType ?? "")  \(ts)")
               .font(.caption2).foregroundColor(.white.opacity(0.8))
           }
         }
