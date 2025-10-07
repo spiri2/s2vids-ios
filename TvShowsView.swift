@@ -404,7 +404,11 @@ struct TvShowsView: View {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
         },
-        onOpenTvShows: { /* already here */ }
+        onOpenTvShows: { /* already here */ },
+        onOpenAdmin: {                      // ✅ added to fix build error
+          dismiss()
+          NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil)
+        }
       )
     }
     .padding(.horizontal, 16)
