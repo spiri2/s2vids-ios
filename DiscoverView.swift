@@ -115,6 +115,10 @@ struct DiscoverView: View {
   // Settings
   @State private var showSettings = false
 
+  // Alerts
+  @State private var showAlert = false
+  @State private var alertMessage = ""
+
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
@@ -172,6 +176,12 @@ struct DiscoverView: View {
           .background(.ultraThinMaterial, in: Capsule())
           .padding()
       }
+    }
+    // Alerts
+    .alert("Request", isPresented: $showAlert) {
+      Button("OK", role: .cancel) { }
+    } message: {
+      Text(alertMessage)
     }
   }
 
@@ -259,7 +269,7 @@ struct DiscoverView: View {
     }
   }
 
-  // MARK: Grid (adaptive, no GeometryReader)
+  // MARK: Grid
 
   private var gridSection: some View {
     Group {
@@ -383,8 +393,7 @@ struct DiscoverView: View {
         comps.queryItems = [ .init(name: "page", value: String(page)) ]
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty {
-          // ✅ Do not pre-encode; URLComponents handles encoding.
-          comps.queryItems?.append(.init(name: "query", value: q))
+          comps.queryItems?.append(.init(name: "query", value: q)) // URLComponents encodes
         }
 
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
@@ -403,28 +412,60 @@ struct DiscoverView: View {
   }
 
   private func request(_ it: DiscoverItem) async {
+    // Only active subs, trial, or admin
     guard hasAccess || effectiveIsAdmin else {
       showGettingStarted = true
       return
     }
+
     loadingId = it.id
     defer { loadingId = nil }
+
     do {
       var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/request"))
       req.httpMethod = "POST"
       req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
       let mediaId = it.id
       let mediaType = it.mediaType ?? "movie"
-      req.httpBody = try JSONSerialization.data(withJSONObject: ["mediaId": mediaId, "mediaType": mediaType])
+      let title = it.title ?? it.name ?? "Unknown"
 
-      let (_, resp) = try await URLSession.shared.data(for: req)
-      if let http = resp as? HTTPURLResponse, http.statusCode == 409 {
-        requestedIds.insert(it.id)
+      req.httpBody = try JSONSerialization.data(
+        withJSONObject: ["mediaId": mediaId, "mediaType": mediaType, "title": title],
+        options: []
+      )
+
+      let (data, resp) = try await URLSession.shared.data(for: req)
+      let http = (resp as? HTTPURLResponse)
+      let text = String(data: data, encoding: .utf8) ?? ""
+
+      // Try to extract { error: "..."} if present
+      func jsonError(_ fallback: String) -> String {
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let err = obj["error"] as? String { return err }
+        return fallback
+      }
+
+      guard let status = http?.statusCode, (200...299).contains(status) else {
+        if http?.statusCode == 409 {
+          requestedIds.insert(it.id)
+          alertMessage = jsonError("This title has already been requested.")
+          showAlert = true
+        } else {
+          alertMessage = "Request failed (\(http?.statusCode ?? -1)): \(text)"
+          showAlert = true
+        }
         return
       }
-      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+
+      // Success
       requestedIds.insert(it.id)
-    } catch { }
+      alertMessage = "Request submitted successfully!"
+      showAlert = true
+    } catch {
+      alertMessage = "Fatal error: \(error.localizedDescription)"
+      showAlert = true
+    }
   }
 
   private func loadRequestedIds() {
