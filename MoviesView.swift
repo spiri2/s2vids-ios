@@ -5,6 +5,16 @@
 
 import SwiftUI
 import AVKit
+import Foundation
+
+// MARK: - Local API base shim (keeps this file self-contained)
+
+private func apiBaseURL() -> URL {
+  if let s = Bundle.main.object(forInfoDictionaryKey: "S2_API_BASE") as? String,
+     let u = URL(string: s) { return u }
+  // ✅ Fallback updated to the production host used by the web app
+  return URL(string: "https://s2vids.org/")!
+}
 
 // MARK: - Models matching your web types
 
@@ -90,6 +100,9 @@ struct MoviesView: View {
   private var favsKey: String { "s2vids:favorites:\(email.isEmpty ? "anon" : email)" }
   @State private var favorites: Set<String> = []
   @State private var showFavoritesOnly = false
+
+  // Debug (optional; helps if things still look empty)
+  @State private var lastMoviesRawJSON: String = ""
 
   // MARK: Access helpers
 
@@ -211,7 +224,11 @@ struct MoviesView: View {
           NotificationCenter.default.post(name: .init("S2VidsDidLogout"), object: nil)
         },
         onOpenSettings: { showSettings = true }, // full-screen
-        onOpenMovies: { dismiss() }              // ✅ use expected label; Dashboard should call this inside the menu to go home
+        onOpenMovies: { dismiss() },             // back to Dashboard
+        onOpenDiscover: {
+          dismiss()
+          NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
+        }
       )
     }
     .zIndex(10_000) // keep menu above posters
@@ -306,6 +323,13 @@ struct MoviesView: View {
           }
 
           if filtered.isEmpty {
+            // Tiny debug echo so we know we *did* fetch something
+            if !lastMoviesRawJSON.isEmpty {
+              Text("No movies after filtering. Server responded with \(lastMoviesRawJSON.count) bytes.")
+                .font(.caption)
+                .foregroundColor(.yellow.opacity(0.9))
+                .padding(.bottom, 6)
+            }
             Text(showFavoritesOnly ? "No favorites yet." : "No movies found.")
               .foregroundColor(.white.opacity(0.85))
           } else {
@@ -695,11 +719,68 @@ struct MoviesView: View {
     Task {
       defer { loadingAll = false }
       do {
-        let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
+        let url = apiBaseURL().appendingPathComponent("api/movies/list")
         let (data, resp) = try await URLSession.shared.data(from: url)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let list = try JSONDecoder().decode([Movie].self, from: data)
-        allMovies = list
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+          allMovies = []
+          return
+        }
+
+        // Keep a copy for quick debug
+        lastMoviesRawJSON = String(data: data, encoding: .utf8) ?? ""
+
+        // ✅ Be liberal in what we accept — array OR wrapped + snake_case keys
+        let parsed = try JSONSerialization.jsonObject(with: data, options: [])
+        let rows: [[String: Any]]
+        if let arr = parsed as? [[String: Any]] {
+          rows = arr
+        } else if let dict = parsed as? [String: Any] {
+          rows =
+            (dict["items"] as? [[String: Any]]) ??
+            (dict["results"] as? [[String: Any]]) ??
+            []
+        } else {
+          rows = []
+        }
+
+        let mapped: [Movie] = rows.compactMap { o in
+          // id: "id" | "movie_id"
+          let id = (o["id"] as? String)
+              ?? (o["movie_id"] as? String)
+              ?? (o["id"] as? Int).map(String.init)
+              ?? (o["movie_id"] as? Int).map(String.init)
+
+          // title
+          let title = (o["title"] as? String)
+
+          // posterUrl: "posterUrl" | "poster_url"
+          let poster = (o["posterUrl"] as? String) ?? (o["poster_url"] as? String)
+
+          // streamUrl: "streamUrl" | "stream_url"
+          let stream = (o["streamUrl"] as? String) ?? (o["stream_url"] as? String)
+
+          // year may be string or int
+          let year: Int? = {
+            if let y = o["year"] as? Int { return y }
+            if let ys = o["year"] as? String, let yi = Int(ys) { return yi }
+            return nil
+          }()
+
+          guard let idSafe = id, let titleSafe = title, let streamSafe = stream else { return nil }
+          return Movie(id: idSafe, title: titleSafe, posterUrl: poster, streamUrl: streamSafe, year: year)
+        }
+
+        // If JSON was already a typed array that matches Movie, fall back to decoding directly
+        if mapped.isEmpty {
+          if let arr = try? JSONDecoder().decode([Movie].self, from: data) {
+            allMovies = arr
+          } else {
+            allMovies = []
+          }
+        } else {
+          allMovies = mapped
+        }
+
         loadProgress()
       } catch {
         allMovies = []
@@ -712,8 +793,10 @@ struct MoviesView: View {
     Task {
       defer { loadingTrending = false }
       do {
-        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/trending"),
-                                  resolvingAgainstBaseURL: false)!
+        var comps = URLComponents(
+          url: apiBaseURL().appendingPathComponent("api/jellyseerr/trending"),
+          resolvingAgainstBaseURL: false
+        )!
         comps.queryItems = [URLQueryItem(name: "limit", value: "40")]
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { trending = []; return }
@@ -730,21 +813,35 @@ struct MoviesView: View {
     Task {
       defer { loadingFree = false }
       do {
-        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/free-monthly"),
-                                  resolvingAgainstBaseURL: false)!
+        var comps = URLComponents(
+          url: apiBaseURL().appendingPathComponent("api/free-monthly"),
+          resolvingAgainstBaseURL: false
+        )!
         comps.queryItems = [URLQueryItem(name: "meta", value: nil)]
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { freeMonthly = []; return }
-        let items = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
-        let mapped: [Movie] = items.compactMap { o in
-          guard let id = o["id"] as? String ?? o["movie_id"] as? String,
-                let title = o["title"] as? String,
-                let stream = o["streamUrl"] as? String ?? o["stream_url"] as? String else { return nil }
-          let poster = o["posterUrl"] as? String ?? o["poster_url"] as? String
-          let year = o["year"] as? Int
+        let any = try JSONSerialization.jsonObject(with: data)
+        let rows: [[String: Any]]
+        if let arr = any as? [[String: Any]] {
+          rows = arr
+        } else if let dict = any as? [String: Any], let arr = dict["items"] as? [[String: Any]] {
+          rows = arr
+        } else {
+          rows = []
+        }
+        freeMonthly = rows.compactMap { o in
+          let id = (o["id"] as? String) ?? (o["movie_id"] as? String)
+          let title = o["title"] as? String
+          let stream = (o["streamUrl"] as? String) ?? (o["stream_url"] as? String)
+          let poster = (o["posterUrl"] as? String) ?? (o["poster_url"] as? String)
+          let year: Int? = {
+            if let y = o["year"] as? Int { return y }
+            if let ys = o["year"] as? String, let yi = Int(ys) { return yi }
+            return nil
+          }()
+          guard let id, let title, let stream else { return nil }
           return Movie(id: id, title: title, posterUrl: poster, streamUrl: stream, year: year)
         }
-        freeMonthly = mapped
       } catch {
         freeMonthly = []
       }
@@ -756,7 +853,7 @@ struct MoviesView: View {
     Task {
       do {
         var comps = URLComponents(
-          url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+          url: apiBaseURL().appendingPathComponent("api/get-stripe-status"),
           resolvingAgainstBaseURL: false
         )!
         comps.queryItems = [URLQueryItem(name: "email", value: email)]
@@ -790,12 +887,32 @@ struct MoviesView: View {
 
   private func reloadAndFindPlay(title: String, year: Int?) async {
     do {
-      var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/movies/list"),
-                                resolvingAgainstBaseURL: false)!
+      var comps = URLComponents(
+        url: apiBaseURL().appendingPathComponent("api/movies/list"),
+        resolvingAgainstBaseURL: false
+      )!
       comps.queryItems = [URLQueryItem(name: "reload", value: "1")]
       let (data, resp) = try await URLSession.shared.data(from: comps.url!)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-      let list = try JSONDecoder().decode([Movie].self, from: data)
+      let parsed = try JSONSerialization.jsonObject(with: data, options: [])
+      let rows: [[String: Any]]
+      if let arr = parsed as? [[String: Any]] { rows = arr }
+      else if let dict = parsed as? [String: Any],
+              let arr = dict["items"] as? [[String: Any]] ?? dict["results"] as? [[String: Any]] { rows = arr }
+      else { rows = [] }
+      let list: [Movie] = rows.compactMap { o in
+        let id = (o["id"] as? String) ?? (o["movie_id"] as? String)
+        let title = o["title"] as? String
+        let poster = (o["posterUrl"] as? String) ?? (o["poster_url"] as? String)
+        let stream = (o["streamUrl"] as? String) ?? (o["stream_url"] as? String)
+        let year: Int? = {
+          if let y = o["year"] as? Int { return y }
+          if let ys = o["year"] as? String, let yi = Int(ys) { return yi }
+          return nil
+        }()
+        guard let id, let title, let stream else { return nil }
+        return Movie(id: id, title: title, posterUrl: poster, streamUrl: stream, year: year)
+      }
       allMovies = list
       if let m = matchMovieByTitle(title, year: year) { openPlayer(for: m) }
     } catch { }
@@ -809,8 +926,10 @@ struct MoviesView: View {
        (scheme == "http" || scheme == "https") {
       return u
     }
-    var c = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/poster"),
-                          resolvingAgainstBaseURL: false)!
+    var c = URLComponents(
+      url: apiBaseURL().appendingPathComponent("api/poster"),
+      resolvingAgainstBaseURL: false
+    )!
     var q: [URLQueryItem] = [ .init(name: "title", value: title), .init(name: "v", value: "1") ]
     if let y = year { q.append(.init(name: "y", value: String(y))) }
     c.queryItems = q
@@ -824,11 +943,18 @@ struct MoviesView: View {
     var t = s.lowercased()
     t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
     t = t.replacingOccurrences(of: "&", with: " and ")
-    t = t.replacingOccurrences(of: ":", with: " ").replacingOccurrences(of: "-", with: " ")
+    for ch in [":", "-", "–", "—", "_", "/", ".", ",", "!", "?", "(", ")", "\""] {
+      t = t.replacingOccurrences(of: ch, with: " ")
+    }
     while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
     t = t.trimmingCharacters(in: .whitespacesAndNewlines)
     for art in ["the ", "a ", "an "] {
       if t.hasPrefix(art) { t = String(t.dropFirst(art.count)) ; break }
+    }
+    // Handle trailing ", The" style just like web
+    if let m = t.range(of: #"^(.+),\s+(the|a|an)$"#, options: .regularExpression) {
+      let parts = t[m].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+      if parts.count == 2 { t = "\(parts[1]) \(parts[0])" }
     }
     return t
   }
