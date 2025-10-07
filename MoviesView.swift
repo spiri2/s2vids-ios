@@ -228,6 +228,10 @@ struct MoviesView: View {
         onOpenDiscover: {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
+        },
+        onOpenTvShows: {                        // ✅ NEW: go to TV Shows
+          dismiss()
+          NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
         }
       )
     }
