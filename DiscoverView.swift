@@ -115,10 +115,6 @@ struct DiscoverView: View {
   // Settings
   @State private var showSettings = false
 
-  // Alerts
-  @State private var showAlert = false
-  @State private var alertMessage = ""
-
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
@@ -127,9 +123,9 @@ struct DiscoverView: View {
         VStack(spacing: 16) {
           header
           searchBar
-          paginationTop
+          paginationBar
           gridSection
-          paginationBottom
+          paginationBar
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
@@ -177,12 +173,6 @@ struct DiscoverView: View {
           .padding()
       }
     }
-    // Alerts
-    .alert("Request", isPresented: $showAlert) {
-      Button("OK", role: .cancel) { }
-    } message: {
-      Text(alertMessage)
-    }
   }
 
   // MARK: Header
@@ -212,7 +202,7 @@ struct DiscoverView: View {
         }
       )
     }
-    .zIndex(10_000) // keep menu above posters
+    .zIndex(10_000) // keep menu above everything if a popup appears
   }
 
   // MARK: Search Bar
@@ -225,7 +215,7 @@ struct DiscoverView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10)
-          .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
+        .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
         .foregroundColor(.white)
         .onSubmit {
           page = 1
@@ -238,18 +228,15 @@ struct DiscoverView: View {
     }
   }
 
-  // MARK: Pagination
-
-  private var paginationTop: some View { paginationBar }
-  private var paginationBottom: some View { paginationBar }
+  // MARK: Pagination (top & bottom)
 
   private var paginationBar: some View {
     HStack {
-      Button("First") { guard page > 1 else { return }; page = 1; fetchPage() }
+      Button("First") { if page > 1 { page = 1; fetchPage() } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page <= 1)
 
-      Button("Prev") { guard page > 1 else { return }; page -= 1; fetchPage() }
+      Button("Prev") { if page > 1 { page -= 1; fetchPage() } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page <= 1)
 
@@ -259,17 +246,17 @@ struct DiscoverView: View {
         .foregroundColor(.white.opacity(0.8))
       Spacer()
 
-      Button("Next") { guard page < totalPages else { return }; page += 1; fetchPage() }
+      Button("Next") { if page < totalPages { page += 1; fetchPage() } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page >= totalPages)
 
-      Button("Last") { guard page < totalPages else { return }; page = totalPages; fetchPage() }
+      Button("Last") { if page < totalPages { page = totalPages; fetchPage() } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page >= totalPages)
     }
   }
 
-  // MARK: Grid
+  // MARK: Grid (adaptive — no GeometryReader, no zIndex)
 
   private var gridSection: some View {
     Group {
@@ -279,10 +266,8 @@ struct DiscoverView: View {
       if items.isEmpty && !loading {
         Text("No titles found.").foregroundColor(.white.opacity(0.85))
       } else {
-        LazyVGrid(
-          columns: [GridItem(.adaptive(minimum: 140), spacing: 12)],
-          spacing: 12
-        ) {
+        let columns = [GridItem(.adaptive(minimum: 118), spacing: 12)]
+        LazyVGrid(columns: columns, spacing: 12) {
           ForEach(items) { it in
             let pureTitle = (it.title ?? it.name ?? "Unknown").trimmingCharacters(in: .whitespaces)
             let display = displayTitle(it)
@@ -295,25 +280,18 @@ struct DiscoverView: View {
                 AsyncImage(url: posterURL(for: it)) { phase in
                   switch phase {
                   case .success(let img):
-                    img.resizable()
-                      .scaledToFill()
-                      .frame(height: 210)
-                      .clipShape(RoundedRectangle(cornerRadius: 10))
+                    img.resizable().scaledToFill()
                   case .failure(_):
                     Color.gray.opacity(0.25)
-                      .frame(height: 210)
                       .overlay(Image(systemName: "film").font(.title2).foregroundColor(.white.opacity(0.6)))
-                      .clipShape(RoundedRectangle(cornerRadius: 10))
                   case .empty:
                     Color.black.opacity(0.2)
-                      .frame(height: 210)
-                      .clipShape(RoundedRectangle(cornerRadius: 10))
                   @unknown default:
                     Color.gray.opacity(0.25)
-                      .frame(height: 210)
-                      .clipShape(RoundedRectangle(cornerRadius: 10))
                   }
                 }
+                .frame(height: 210)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 VStack {
                   HStack {
@@ -333,6 +311,7 @@ struct DiscoverView: View {
               Text(display)
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
               if canWatch {
                 Button { openPlayer(title: pureTitle, urlString: maybeStream!) } label: {
@@ -343,16 +322,18 @@ struct DiscoverView: View {
                 Button {
                   Task { await request(it) }
                 } label: {
-                  Text(requested ? "✅ Requested" : (loadingId == it.id ? "Requesting…" : "Request"))
+                  Text(requested ? "✅ Requested"
+                       : (loadingId == it.id ? "Requesting…"
+                          : (hasAccess || effectiveIsAdmin ? "Request" : "Subscribe to Request")))
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(requested || loadingId == it.id || !(hasAccess || effectiveIsAdmin))
               }
             }
+            .background(Color.clear)
           }
         }
-        .padding(.top, 4)
       }
     }
   }
@@ -393,7 +374,7 @@ struct DiscoverView: View {
         comps.queryItems = [ .init(name: "page", value: String(page)) ]
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty {
-          comps.queryItems?.append(.init(name: "query", value: q)) // URLComponents encodes
+          comps.queryItems?.append(.init(name: "query", value: q)) // let URLComponents encode
         }
 
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
@@ -411,16 +392,14 @@ struct DiscoverView: View {
     }
   }
 
+  /// Submit a Jellyseerr request; only allowed for active/trial/admin.
   private func request(_ it: DiscoverItem) async {
-    // Only active subs, trial, or admin
     guard hasAccess || effectiveIsAdmin else {
       showGettingStarted = true
       return
     }
-
     loadingId = it.id
     defer { loadingId = nil }
-
     do {
       var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/request"))
       req.httpMethod = "POST"
@@ -428,43 +407,35 @@ struct DiscoverView: View {
 
       let mediaId = it.id
       let mediaType = it.mediaType ?? "movie"
-      let title = it.title ?? it.name ?? "Unknown"
-
-      req.httpBody = try JSONSerialization.data(
-        withJSONObject: ["mediaId": mediaId, "mediaType": mediaType, "title": title],
-        options: []
-      )
+      let title = (it.title ?? it.name ?? "Unknown")
+      req.httpBody = try JSONSerialization.data(withJSONObject: [
+        "mediaId": mediaId,
+        "mediaType": mediaType,
+        "title": title
+      ])
 
       let (data, resp) = try await URLSession.shared.data(for: req)
-      let http = (resp as? HTTPURLResponse)
-      let text = String(data: data, encoding: .utf8) ?? ""
+      guard let http = resp as? HTTPURLResponse else { return }
 
-      // Try to extract { error: "..."} if present
-      func jsonError(_ fallback: String) -> String {
-        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let err = obj["error"] as? String { return err }
-        return fallback
+      let text = String(data: data, encoding: .utf8) ?? ""
+      var json: [String: Any] = [:]
+      if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        json = obj
       }
 
-      guard let status = http?.statusCode, (200...299).contains(status) else {
-        if http?.statusCode == 409 {
-          requestedIds.insert(it.id)
-          alertMessage = jsonError("This title has already been requested.")
-          showAlert = true
-        } else {
-          alertMessage = "Request failed (\(http?.statusCode ?? -1)): \(text)"
-          showAlert = true
-        }
+      if http.statusCode == 409 {
+        requestedIds.insert(it.id)
         return
       }
 
-      // Success
+      guard (200...299).contains(http.statusCode) else {
+        print("Request failed (\(http.statusCode)): \(json["error"] as? String ?? text)")
+        return
+      }
+
       requestedIds.insert(it.id)
-      alertMessage = "Request submitted successfully!"
-      showAlert = true
     } catch {
-      alertMessage = "Fatal error: \(error.localizedDescription)"
-      showAlert = true
+      print("Fatal request error: \(error)")
     }
   }
 
@@ -591,7 +562,9 @@ struct DiscoverView: View {
     var t = s.lowercased()
     t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
     t = t.replacingOccurrences(of: "&", with: " and ")
-    t = t.replacingOccurrences(of: ":", with: " ").replacingOccurrences(of: "-", with: " ")
+    for ch in [":", "-", "–", "—", "_", "/", ".", ",", "!", "?", "(", ")", "\""] {
+      t = t.replacingOccurrences(of: ch, with: " ")
+    }
     while t.contains("  ") { t = t.replacingOccurrences(of: "  ", with: " ") }
     t = t.trimmingCharacters(in: .whitespacesAndNewlines)
     for art in ["the ", "a ", "an "] { if t.hasPrefix(art) { t = String(t.dropFirst(art.count)); break } }
