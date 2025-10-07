@@ -30,6 +30,9 @@ private struct StripeStatusResponse: Decodable {
   let trial_end: Int?
 }
 
+private struct GenericOK: Decodable { let ok: Bool?; let message: String? }
+private struct GenericErr: Decodable { let error: String? }
+
 // MARK: - Settings View
 
 struct SettingsView: View {
@@ -101,7 +104,7 @@ struct SettingsView: View {
         .padding(.top, 16)
         .padding(.bottom, 36)
       }
-      // Pull-to-refresh like the web’s reactive updates
+      // Pull down to refresh Settings
       .refreshable { await refreshSettings() }
     }
     .preferredColorScheme(.dark)
@@ -121,7 +124,7 @@ struct SettingsView: View {
         email: email,
         isAdmin: isAdmin,
         onRequireAccess: { },
-        onLogout: { /* hook logout if needed */ },
+        onLogout: { /* hook logout */ },
         onOpenSettings: { /* already here */ },
         onOpenMovies: {
           dismiss()
@@ -266,7 +269,7 @@ struct SettingsView: View {
     }
   }
 
-  // Invites (local UI only; back it by API/table later if needed)
+  // Invites
   private func invitePanelView() -> some View {
     sectionContainer {
       HStack {
@@ -336,7 +339,7 @@ struct SettingsView: View {
     }
   }
 
-  // Account (keep flows consistent with web text; iOS still shows friendly guidance)
+  // Account
   private func accountPanelView() -> some View {
     sectionContainer {
       Text("Account")
@@ -369,8 +372,7 @@ struct SettingsView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
             .foregroundColor(.white)
           primaryButton("Update") {
-            // If you later wire Supabase into the iOS app, replace this banner with a real call.
-            confirmation = "✅ Email update requested (use web app to confirm)."
+            confirmation = "⚠️ Email update requires the web app for now."
             newEmail = ""
           }
         }
@@ -396,9 +398,7 @@ struct SettingsView: View {
           .foregroundColor(.white)
 
         primaryButton("Update") {
-          // Mirrors the intent of the web page while keeping iOS simple
-          confirmation = "✅ Password update requested (use web app to finalize)."
-          currentPassword = ""; newPassword = ""
+          await changeAccountPassword()
         }
       }
 
@@ -533,7 +533,6 @@ struct SettingsView: View {
     invitesAvailable = inviteLimit
   }
 
-  // Pull-to-refresh handler
   private func refreshSettings() async {
     await fetchStripeStatus()
     await checkJellyfin()
@@ -563,6 +562,20 @@ struct SettingsView: View {
     return (data, resp as! HTTPURLResponse)
   }
 
+  private func isLikelyHTML(_ data: Data) -> Bool {
+    if data.isEmpty { return false }
+    let prefix = String(decoding: data.prefix(256), as: UTF8.self).lowercased()
+    return prefix.contains("<!doctype") || prefix.contains("<html")
+  }
+
+  private func msgFrom(_ data: Data) -> String? {
+    if let g = try? JSONDecoder().decode(GenericOK.self, from: data), let m = g.message, !m.isEmpty { return m }
+    if let e = try? JSONDecoder().decode(GenericErr.self, from: data), let m = e.error, !m.isEmpty { return m }
+    return nil
+  }
+
+  // ---- Jellyfin ----
+
   private func checkJellyfin() async {
     guard !email.isEmpty else { return }
     jfLoading = true; jfError = ""; jfSuccess = ""
@@ -579,26 +592,54 @@ struct SettingsView: View {
   }
 
   private func createJellyfin() async {
-    // Stub; add your real server call here
-    jfSuccess = "Triggered create account (implement server endpoint)."
+    guard !email.isEmpty else { return }
+    jfLoading = true; jfError = ""; jfSuccess = ""
+    struct Payload: Encodable { let username: String }
+    defer { jfLoading = false }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/check-or-create-jellyfin"), body: Payload(username: email))
+      if resp.statusCode == 200 {
+        jfSuccess = msgFrom(data) ?? "Jellyfin account ready."
+        jfUsername = email
+      } else {
+        jfError = msgFrom(data) ?? "Failed to create Jellyfin user."
+      }
+    } catch {
+      jfError = "Error creating Jellyfin user."
+    }
   }
 
   private func changeJellyfinPassword() async {
-    // Stub; add your real server call here
-    jfSuccess = "Triggered change password (implement server endpoint)."
+    guard !email.isEmpty else { return }
+    jfLoading = true; jfError = ""; jfSuccess = ""
+    struct Payload: Encodable { let username: String }
+    defer { jfLoading = false }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/reset-jellyfin-password"), body: Payload(username: email))
+      if resp.statusCode == 200 {
+        if isLikelyHTML(data) { jfSuccess = "Password change requested." }
+        else { jfSuccess = msgFrom(data) ?? "Password change requested." }
+      } else {
+        jfError = msgFrom(data) ?? "Failed to change password."
+      }
+    } catch {
+      jfError = "Error contacting server."
+    }
   }
+
+  // ---- Stripe ----
 
   private func cancelSubscription() async {
     guard !email.isEmpty else { return }
     struct Payload: Encodable { let email: String }
     jfLoading = true; defer { jfLoading = false }
     do {
-      let (_, resp) = try await postJSON(apiURL("api/cancel-subscription"), body: Payload(email: email))
+      let (data, resp) = try await postJSON(apiURL("api/cancel-subscription"), body: Payload(email: email))
       if resp.statusCode == 200 {
-        jfSuccess = "Subscription canceled successfully."
+        jfSuccess = msgFrom(data) ?? "Subscription canceled successfully."
         cancelAtPeriodEnd = true
       } else {
-        jfError = "Failed to cancel subscription."
+        jfError = msgFrom(data) ?? "Failed to cancel subscription."
       }
     } catch {
       jfError = "Error cancelling subscription."
@@ -612,27 +653,79 @@ struct SettingsView: View {
     do {
       let (data, resp) = try await postJSON(apiURL("api/restore-subscription"), body: Payload(email: email))
       if resp.statusCode == 200 {
-        let s = (try? JSONDecoder().decode(StripeStatusResponse.self, from: data))?.status
-        if (s ?? "") != "" {
+        if let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data),
+           (s.status ?? "").isEmpty == false {
           subscriptionStatus = "active"
           cancelAtPeriodEnd = false
           jfSuccess = "Subscription restored!"
         } else {
-          jfError = "Failed to restore subscription."
+          jfError = msgFrom(data) ?? "Failed to restore subscription."
         }
       } else {
-        jfError = "Failed to restore subscription."
+        jfError = msgFrom(data) ?? "Failed to restore subscription."
       }
     } catch {
       jfError = "Error restoring subscription."
     }
   }
 
+  // ---- Discord & Account ----
+
   private func updateDiscord() async {
-    // Mirrors the web’s “update” action UX; wire to your backend when ready
-    discordUsername = updatedDiscord
-    updatedDiscord = ""
-    confirmation = "✅ Discord username updated."
+    guard !email.isEmpty else { return }
+    struct Body: Encodable { let email: String; let discord: String }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/save-user"), body: Body(email: email, discord: updatedDiscord))
+      if resp.statusCode == 200 {
+        discordUsername = updatedDiscord
+        updatedDiscord = ""
+        confirmation = msgFrom(data) ?? "✅ Discord username updated."
+      } else {
+        confirmation = msgFrom(data) ?? "❌ Failed to update Discord username."
+      }
+    } catch {
+      confirmation = "❌ Error updating Discord username."
+    }
+  }
+
+  /// If both fields present, try direct update; otherwise fall back to reset-by-email.
+  private func changeAccountPassword() async {
+    guard !email.isEmpty else {
+      confirmation = "❌ Enter your email first."
+      return
+    }
+    // Direct update path
+    if !currentPassword.isEmpty && !newPassword.isEmpty {
+      struct Body: Encodable { let email: String; let current_password: String; let new_password: String }
+      do {
+        let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
+                                              body: Body(email: email, current_password: currentPassword, new_password: newPassword))
+        if resp.statusCode == 200 {
+          confirmation = msgFrom(data) ?? "✅ Password updated."
+          currentPassword = ""; newPassword = ""
+          return
+        } else {
+          confirmation = msgFrom(data) ?? "❌ Failed to update password."
+          return
+        }
+      } catch {
+        confirmation = "❌ Error updating password."
+        return
+      }
+    }
+
+    // Fallback: send reset email
+    struct Body2: Encodable { let email: String }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: Body2(email: email))
+      if resp.statusCode == 200 {
+        confirmation = msgFrom(data) ?? "✅ Password reset email sent. Check your inbox."
+      } else {
+        confirmation = msgFrom(data) ?? "❌ Password reset request failed."
+      }
+    } catch {
+      confirmation = "❌ Network error while requesting password reset."
+    }
   }
 
   private func generateInvite() async {
@@ -642,14 +735,7 @@ struct SettingsView: View {
     }
     let code = String(UUID().uuidString.prefix(8)).uppercased()
     let expiresISO = ISO8601DateFormatter().string(from: Date().addingTimeInterval(48 * 3600))
-    let new = Invite(
-      code: code,
-      issued_to: "open",
-      max_uses: 1,
-      uses: 0,
-      created_at: ISO8601DateFormatter().string(from: Date()),
-      expires_at: expiresISO
-    )
+    let new = Invite(code: code, issued_to: "open", max_uses: 1, uses: 0, created_at: ISO8601DateFormatter().string(from: Date()), expires_at: expiresISO)
     invites.insert(new, at: 0)
     invitesAvailable = max(0, invitesAvailable - 1)
     confirmation = "✅ Invite created: \(code)"
