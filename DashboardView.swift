@@ -31,11 +31,12 @@ struct DashboardView: View {
   }
   @State private var infoPayload: InfoPayload?
 
-  // Settings / Movies / Discover / TV Shows
+  // Settings / Movies / Discover / TV Shows / Admin
   @State private var showSettings = false
   @State private var showMovies = false
   @State private var showDiscover = false
   @State private var showTvShows = false
+  @State private var showAdmin = false                 // ✅ NEW
 
   // Hardcoded admin email override + prop
   private var effectiveIsAdmin: Bool {
@@ -144,7 +145,7 @@ struct DashboardView: View {
       SettingsView(email: email, isAdmin: effectiveIsAdmin)
     }
 
-    // Movies page (opened from dropdown) — fullscreen
+    // Movies page (opened from dropdown)
     .fullScreenCover(isPresented: $showMovies) {
       MoviesView(
         email: email,
@@ -154,7 +155,7 @@ struct DashboardView: View {
       )
     }
 
-    // Discover page (opened from dropdown) — fullscreen
+    // Discover page (opened from dropdown)
     .fullScreenCover(isPresented: $showDiscover) {
       DiscoverView(
         email: email,
@@ -164,7 +165,7 @@ struct DashboardView: View {
       )
     }
 
-    // TV Shows page (opened from dropdown) — fullscreen
+    // TV Shows page (opened from dropdown)
     .fullScreenCover(isPresented: $showTvShows) {
       TvShowsView(
         email: email,
@@ -172,6 +173,11 @@ struct DashboardView: View {
         subscriptionStatus: effectiveStatus,
         isTrialing: effectiveTrialing
       )
+    }
+
+    // ✅ Admin page (opened from dropdown)
+    .fullScreenCover(isPresented: $showAdmin) {
+      AdminView(email: email)
     }
   }
 
@@ -265,7 +271,8 @@ struct DashboardView: View {
         onOpenSettings: { showSettings = true },   // open Settings
         onOpenMovies: { showMovies = true },       // open Movies
         onOpenDiscover: { showDiscover = true },   // open Discover
-        onOpenTvShows: { showTvShows = true }      // open TV Shows
+        onOpenTvShows: { showTvShows = true },     // open TV Shows
+        onOpenAdmin: { showAdmin = true }          // ✅ open Admin
       )
     }
     .foregroundColor(.white)
@@ -616,7 +623,7 @@ private struct DetentsCompatLarge: ViewModifier {
   }
 }
 
-// MARK: - User Dropdown (with Movies, Discover & TV Shows callbacks)
+// MARK: - User Dropdown (with Movies, Discover & TV Shows & Admin callbacks)
 
 struct UserMenuButton: View {
   let email: String
@@ -627,6 +634,7 @@ struct UserMenuButton: View {
   let onOpenMovies: () -> Void
   let onOpenDiscover: () -> Void
   let onOpenTvShows: () -> Void
+  let onOpenAdmin: () -> Void          // ✅ NEW
 
   @State private var open = false
   @State private var hasAccess = false
@@ -696,8 +704,12 @@ struct UserMenuButton: View {
               onOpenSettings()
             }
 
+            // ✅ Only visible to admins; opens AdminView when tapped
             if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
-              Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) { open = false }
+              Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) {
+                open = false
+                onOpenAdmin()
+              }
             }
 
             Row(icon: "arrow.backward.square", title: "Log Out", tint: .red) {
