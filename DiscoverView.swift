@@ -118,6 +118,7 @@ struct DiscoverView: View {
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
+
       ScrollView {
         VStack(spacing: 16) {
           header
@@ -196,16 +197,12 @@ struct DiscoverView: View {
         onOpenMovies: { dismiss() },
         onOpenDiscover: { },
         onOpenTvShows: {
-          // ✅ NEW: route to TV Shows from Discover
           dismiss()
-          NotificationCenter.default.post(
-            name: Notification.Name("S2OpenTvShows"),
-            object: nil
-          )
+          NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
         }
       )
     }
-    .zIndex(10_000)
+    .zIndex(10_000) // keep menu above posters
   }
 
   // MARK: Search Bar
@@ -218,7 +215,7 @@ struct DiscoverView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10)
-        .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
+          .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
         .foregroundColor(.white)
         .onSubmit {
           page = 1
@@ -262,7 +259,7 @@ struct DiscoverView: View {
     }
   }
 
-  // MARK: Grid
+  // MARK: Grid (adaptive, no GeometryReader)
 
   private var gridSection: some View {
     Group {
@@ -272,85 +269,82 @@ struct DiscoverView: View {
       if items.isEmpty && !loading {
         Text("No titles found.").foregroundColor(.white.opacity(0.85))
       } else {
-        GeometryReader { proxy in
-          let spacing: CGFloat = 12
-          let columns = 3
-          let cardW = (proxy.size.width - CGFloat(columns - 1) * spacing) / CGFloat(columns)
-          let cardH = cardW * 1.5
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 140), spacing: 12)],
+          spacing: 12
+        ) {
+          ForEach(items) { it in
+            let pureTitle = (it.title ?? it.name ?? "Unknown").trimmingCharacters(in: .whitespaces)
+            let display = displayTitle(it)
+            let requested = requestedIds.contains(it.id)
+            let maybeStream = streamFor(it)
+            let canWatch = requested && (maybeStream != nil)
 
-          LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns), spacing: spacing) {
-            ForEach(items) { it in
-              let pureTitle = (it.title ?? it.name ?? "Unknown").trimmingCharacters(in: .whitespaces)
-              let display = displayTitle(it)
-              let requested = requestedIds.contains(it.id)
-              let maybeStream = streamFor(it)
-              let canWatch = requested && (maybeStream != nil)
-
-              VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                  AsyncImage(url: posterURL(for: it)) { phase in
-                    switch phase {
-                    case .success(let img):
-                      img.resizable().scaledToFill().frame(width: cardW, height: cardH).clipped()
-                    case .failure(_):
-                      Color.gray.opacity(0.25).frame(width: cardW, height: cardH)
-                        .overlay(Image(systemName: "film").font(.title2).foregroundColor(.white.opacity(0.6)))
-                    case .empty:
-                      Color.black.opacity(0.2).frame(width: cardW, height: cardH)
-                    @unknown default:
-                      Color.gray.opacity(0.25).frame(width: cardW, height: cardH)
-                    }
+            VStack(alignment: .leading, spacing: 6) {
+              ZStack {
+                AsyncImage(url: posterURL(for: it)) { phase in
+                  switch phase {
+                  case .success(let img):
+                    img.resizable()
+                      .scaledToFill()
+                      .frame(height: 210)
+                      .clipShape(RoundedRectangle(cornerRadius: 10))
+                  case .failure(_):
+                    Color.gray.opacity(0.25)
+                      .frame(height: 210)
+                      .overlay(Image(systemName: "film").font(.title2).foregroundColor(.white.opacity(0.6)))
+                      .clipShape(RoundedRectangle(cornerRadius: 10))
+                  case .empty:
+                    Color.black.opacity(0.2)
+                      .frame(height: 210)
+                      .clipShape(RoundedRectangle(cornerRadius: 10))
+                  @unknown default:
+                    Color.gray.opacity(0.25)
+                      .frame(height: 210)
+                      .clipShape(RoundedRectangle(cornerRadius: 10))
                   }
-                  .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
 
-                  VStack {
-                    HStack {
-                      Spacer()
-                      Button { openInfo(it) } label: {
-                        Image(systemName: "ellipsis")
-                          .foregroundColor(.white)
-                          .padding(8)
-                          .background(.black.opacity(0.6), in: Circle())
-                      }
-                    }
+                VStack {
+                  HStack {
                     Spacer()
+                    Button { openInfo(it) } label: {
+                      Image(systemName: "ellipsis")
+                        .foregroundColor(.white)
+                        .padding(8)
+                        .background(.black.opacity(0.6), in: Circle())
+                    }
                   }
-                  .padding(6)
+                  Spacer()
                 }
+                .padding(6)
+              }
 
-                Text(display)
-                  .font(.system(size: 12, weight: .medium))
-                  .lineLimit(2)
-                  .frame(width: cardW - 6, alignment: .leading)
+              Text(display)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(2)
 
-                if canWatch {
-                  Button { openPlayer(title: pureTitle, urlString: maybeStream!) } label: {
-                    Text("Watch").frame(maxWidth: .infinity)
-                  }
-                  .buttonStyle(.borderedProminent)
-                } else {
-                  Button {
-                    Task { await request(it) }
-                  } label: {
-                    Text(requested ? "✅ Requested" : (loadingId == it.id ? "Requesting…" : "Request"))
-                      .frame(maxWidth: .infinity)
-                  }
-                  .buttonStyle(.borderedProminent)
-                  .disabled(requested || loadingId == it.id || !(hasAccess || effectiveIsAdmin))
+              if canWatch {
+                Button { openPlayer(title: pureTitle, urlString: maybeStream!) } label: {
+                  Text("Watch").frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+              } else {
+                Button {
+                  Task { await request(it) }
+                } label: {
+                  Text(requested ? "✅ Requested" : (loadingId == it.id ? "Requesting…" : "Request"))
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(requested || loadingId == it.id || !(hasAccess || effectiveIsAdmin))
               }
             }
           }
-          .frame(height: gridHeight(itemCount: items.count, cardH: cardH))
         }
-        .frame(minHeight: 200)
+        .padding(.top, 4)
       }
     }
-  }
-
-  private func gridHeight(itemCount: Int, cardH: CGFloat) -> CGFloat {
-    let rows = Int(ceil(Double(itemCount) / 3.0))
-    return CGFloat(rows) * (cardH + 40) + CGFloat(max(0, rows - 1)) * 12
   }
 
   // MARK: Info / Player Helpers
@@ -389,7 +383,8 @@ struct DiscoverView: View {
         comps.queryItems = [ .init(name: "page", value: String(page)) ]
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty {
-          comps.queryItems?.append(.init(name: "query", value: q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)))
+          // ✅ Do not pre-encode; URLComponents handles encoding.
+          comps.queryItems?.append(.init(name: "query", value: q))
         }
 
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
