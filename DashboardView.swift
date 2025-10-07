@@ -31,9 +31,11 @@ struct DashboardView: View {
   }
   @State private var infoPayload: InfoPayload?
 
-  // Settings / Movies sheet state
+  // Settings / Movies / Discover / TV Shows
   @State private var showSettings = false
-  @State private var showMovies = false   // <-- NEW
+  @State private var showMovies = false
+  @State private var showDiscover = false
+  @State private var showTvShows = false
 
   // Hardcoded admin email override + prop
   private var effectiveIsAdmin: Bool {
@@ -151,6 +153,26 @@ struct DashboardView: View {
         isTrialing: effectiveTrialing
       )
     }
+
+    // Discover page (opened from dropdown) — fullscreen
+    .fullScreenCover(isPresented: $showDiscover) {
+      DiscoverView(
+        email: email,
+        isAdmin: effectiveIsAdmin,
+        subscriptionStatus: effectiveStatus,
+        isTrialing: effectiveTrialing
+      )
+    }
+
+    // TV Shows page (opened from dropdown) — fullscreen
+    .fullScreenCover(isPresented: $showTvShows) {
+      TvShowsView(
+        email: email,
+        isAdmin: effectiveIsAdmin,
+        subscriptionStatus: effectiveStatus,
+        isTrialing: effectiveTrialing
+      )
+    }
   }
 
   // Prefer resolved values from API; fall back to incoming props until resolved.
@@ -241,7 +263,9 @@ struct DashboardView: View {
         onRequireAccess: { vm.showGettingStarted = true },
         onLogout: { /* hook up to your logout */ },
         onOpenSettings: { showSettings = true },   // open Settings
-        onOpenMovies: { showMovies = true }        // <-- open Movies
+        onOpenMovies: { showMovies = true },       // open Movies
+        onOpenDiscover: { showDiscover = true },   // open Discover
+        onOpenTvShows: { showTvShows = true }      // open TV Shows
       )
     }
     .foregroundColor(.white)
@@ -486,18 +510,18 @@ struct GettingStartedSheet: View {
     NavigationView {
       VStack(alignment: .leading, spacing: 12) {
         if showNoSubNotice {
-          Text("You currently have **no active subscription**.")
+          Text("You currently have no active subscription.")
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.red.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
         }
         Text("Getting started").font(.headline).fontWeight(.bold)
         Group {
-          Text("1. Select **Subscribe**.")
+          Text("1. Select Subscribe.")
           Text("2. After subscribing, return here and refresh the page.")
-          Text("3. Create your **Jellyfin** account & set a password.")
-          Text("4. Open the menu (top right) and **Launch Jellyfin**.")
-          Text("5. Sign in with your email + password.")
+          Text("3. Create your Jellyfin account and set a password.")
+          Text("4. Open the menu (top right) and Launch Jellyfin.")
+          Text("5. Sign in with your email and password.")
         }
         .foregroundColor(.secondary)
 
@@ -592,7 +616,7 @@ private struct DetentsCompatLarge: ViewModifier {
   }
 }
 
-// MARK: - User Dropdown (now with Movies callback)
+// MARK: - User Dropdown (with Movies, Discover & TV Shows callbacks)
 
 struct UserMenuButton: View {
   let email: String
@@ -600,7 +624,9 @@ struct UserMenuButton: View {
   let onRequireAccess: () -> Void
   let onLogout: () -> Void
   let onOpenSettings: () -> Void
-  let onOpenMovies: () -> Void       // <-- NEW
+  let onOpenMovies: () -> Void
+  let onOpenDiscover: () -> Void
+  let onOpenTvShows: () -> Void
 
   @State private var open = false
   @State private var hasAccess = false
@@ -638,15 +664,20 @@ struct UserMenuButton: View {
 
           VStack(spacing: 0) {
             Row(icon: "rectangle.grid.2x2", title: "Dashboard") { open = false }
-            Row(icon: "safari", title: "Discover") { open = false }
+            Row(icon: "safari", title: "Discover") {
+              open = false
+              onOpenDiscover()
+            }
 
-            // Movies → open MoviesView fullscreen
             Row(icon: "film", title: "Movies") {
               open = false
               onOpenMovies()
             }
 
-            Row(icon: "tv", title: "TV Shows") { open = false }
+            Row(icon: "tv", title: "TV Shows") {
+              open = false
+              onOpenTvShows()
+            }
             Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
             Row(icon: "calendar", title: "TV Show Calendar") { open = false }
 
