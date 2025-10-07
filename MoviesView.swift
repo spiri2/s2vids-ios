@@ -12,11 +12,21 @@ import Foundation
 private func apiBaseURL() -> URL {
   if let s = Bundle.main.object(forInfoDictionaryKey: "S2_API_BASE") as? String,
      let u = URL(string: s) { return u }
-  // ✅ Fallback updated to the production host used by the web app
   return URL(string: "https://s2vids.org/")!
 }
 
-// MARK: - Models matching your web types
+private func resolveStreamURL(_ raw: String) -> URL? {
+  if let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
+     scheme == "https" || scheme == "http" || scheme == "file" {
+    return u
+  }
+  if raw.hasPrefix("/") {
+    return URL(string: raw, relativeTo: apiBaseURL())?.absoluteURL
+  }
+  return apiBaseURL().appendingPathComponent(raw).absoluteURL
+}
+
+// MARK: - Models
 
 private struct Movie: Identifiable, Decodable, Hashable {
   let id: String
@@ -41,7 +51,6 @@ private struct StripeStatusResponse: Decodable {
   let trial_end: Int?
 }
 
-// Local watch progress (per movie)
 private struct WatchProgress: Codable, Hashable {
   var position: Double
   var duration: Double
@@ -51,20 +60,17 @@ private struct WatchProgress: Codable, Hashable {
 // MARK: - Movies View
 
 struct MoviesView: View {
-  // Inject after login like DashboardView
   let email: String
   let isAdmin: Bool
   let subscriptionStatus: String
   let isTrialing: Bool
 
-  @Environment(\.dismiss) private var dismiss   // used to go back to Dashboard
+  @Environment(\.dismiss) private var dismiss
 
-  // Access resolution (same approach as DashboardView)
   @State private var resolvedStatus: String = ""
   @State private var resolvedTrialing: Bool = false
   @State private var accessResolved = false
 
-  // Data
   @State private var allMovies: [Movie] = []
   @State private var trending: [MoviesTrendingItem] = []
   @State private var freeMonthly: [Movie] = []
@@ -73,12 +79,10 @@ struct MoviesView: View {
   @State private var loadingTrending = true
   @State private var loadingFree = true
 
-  // UI
   @State private var query: String = ""
   @State private var page: Int = 1
   private let perPage = 60
 
-  // Info + player
   @State private var infoTitle: String = ""
   @State private var infoOpen = false
 
@@ -90,21 +94,25 @@ struct MoviesView: View {
   @State private var player: AVPlayer? = nil
   @State private var timeObserver: Any?
 
-  // Getting started (gate)
+  // Diagnostics
+  @State private var playerFailed = false
+  @State private var playerStatusMsg = ""
+  private var isPlayerError: Bool { playerFailed && !playerStatusMsg.isEmpty }
+  @State private var httpWarning = false
+  private var showHttpWarning: Bool { httpWarning && !isPlayerError }
+
+  // ⬅️ FIX: Make this @State so we can assign in methods
+  @State private var itemStatusObserver: NSKeyValueObservation? = nil
+  @State private var playerFailObserver: NSObjectProtocol? = nil
+
   @State private var showGettingStarted = false
+  @State private var showSettings = false
 
-  // Settings
-  @State private var showSettings = false     // will be shown full-screen
-
-  // Favorites (persisted per email)
   private var favsKey: String { "s2vids:favorites:\(email.isEmpty ? "anon" : email)" }
   @State private var favorites: Set<String> = []
   @State private var showFavoritesOnly = false
 
-  // Debug (optional; helps if things still look empty)
   @State private var lastMoviesRawJSON: String = ""
-
-  // MARK: Access helpers
 
   private var effectiveStatus: String { accessResolved ? resolvedStatus : subscriptionStatus }
   private var effectiveTrialing: Bool { accessResolved ? resolvedTrialing : isTrialing }
@@ -149,7 +157,6 @@ struct MoviesView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
       }
-      // ⬇️ Pull-to-refresh (re-runs existing loaders)
       .refreshable { await refreshMovies() }
     }
     .preferredColorScheme(.dark)
@@ -160,24 +167,20 @@ struct MoviesView: View {
       loadTrending()
       loadFree()
     }
-    // Getting Started
     .sheet(isPresented: $showGettingStarted) {
       GettingStartedSheet(showNoSubNotice: !hasAccess) {
         showGettingStarted = false
       }
       .modifier(MoviesDetentsCompatMediumLarge())
     }
-    // Info
     .sheet(isPresented: $infoOpen) {
       MovieInfoSheet(title: infoTitle, year: nil,
                      posterURL: posterURL(for: infoTitle, year: nil)?.absoluteString ?? "")
         .modifier(MoviesDetentsCompatMediumLarge())
     }
-    // Settings — FULL SCREEN now
     .fullScreenCover(isPresented: $showSettings) {
       SettingsView(email: email, isAdmin: effectiveIsAdmin)
     }
-    // Player
     .fullScreenCover(isPresented: $playerOpen, onDismiss: stopObserving) {
       ZStack(alignment: .topTrailing) {
         if let p = player {
@@ -187,10 +190,23 @@ struct MoviesView: View {
         } else {
           Color.black.ignoresSafeArea()
         }
-        Button("Close") { closePlayer() }
-          .padding(12)
-          .background(.ultraThinMaterial, in: Capsule())
-          .padding()
+        VStack(alignment: .trailing, spacing: 8) {
+          if isPlayerError {
+            Text(playerStatusMsg)
+              .font(.footnote).bold()
+              .padding(.horizontal, 10).padding(.vertical, 6)
+              .background(Color.red, in: Capsule())
+          } else if showHttpWarning {
+            Text("HTTP stream — configure ATS or use HTTPS")
+              .font(.footnote).bold()
+              .padding(.horizontal, 10).padding(.vertical, 6)
+              .background(Color.orange, in: Capsule())
+          }
+          Button("Close") { closePlayer() }
+            .padding(12)
+            .background(.ultraThinMaterial, in: Capsule())
+        }
+        .padding()
       }
     }
   }
@@ -205,7 +221,6 @@ struct MoviesView: View {
 
       Spacer()
 
-      // Favorites toggle — placed LEFT of dropdown/menu button
       Button {
         showFavoritesOnly.toggle()
         page = 1
@@ -220,28 +235,27 @@ struct MoviesView: View {
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { showGettingStarted = true },
         onLogout: {
-          // Minimal sign-out: clear user-local data & notify app
           UserDefaults.standard.removeObject(forKey: "s2vids:favorites:\(email.isEmpty ? "anon" : email)")
           UserDefaults.standard.removeObject(forKey: "s2vids:progress:\(email.isEmpty ? "anon" : email)")
           NotificationCenter.default.post(name: .init("S2VidsDidLogout"), object: nil)
         },
-        onOpenSettings: { showSettings = true }, // full-screen
-        onOpenMovies: { dismiss() },             // back to Dashboard
+        onOpenSettings: { showSettings = true },
+        onOpenMovies: { dismiss() },
         onOpenDiscover: {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
         },
-        onOpenTvShows: {                        // go to TV Shows
+        onOpenTvShows: {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
         },
-        onOpenAdmin: {                          // ✅ NEW: go to Admin
+        onOpenAdmin: {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil)
         }
       )
     }
-    .zIndex(10_000) // keep menu above posters
+    .zIndex(10_000)
   }
 
   private var searchBar: some View {
@@ -308,7 +322,7 @@ struct MoviesView: View {
     }
   }
 
-  // MARK: All Movies (3 per row + real posters + favorites filter)
+  // MARK: All Movies
 
   private var allMoviesSection: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -318,7 +332,6 @@ struct MoviesView: View {
         if loadingAll || (!hasAccess && loadingFree) {
           Text("Loading library…").foregroundColor(.white.opacity(0.85))
         } else {
-          // Pagination controls
           HStack {
             Spacer()
             Button("Prev") { page = max(1, page - 1) }
@@ -333,7 +346,6 @@ struct MoviesView: View {
           }
 
           if filtered.isEmpty {
-            // Tiny debug echo so we know we *did* fetch something
             if !lastMoviesRawJSON.isEmpty {
               Text("No movies after filtering. Server responded with \(lastMoviesRawJSON.count) bytes.")
                 .font(.caption)
@@ -424,18 +436,15 @@ struct MoviesView: View {
     }
   }
 
-  /// Height helpers so GeometryReader sizes correctly.
   private func rows(for count: Int) -> Int { max(1, Int(ceil(Double(count) / 3.0))) }
   private func gridHeight(itemCount: Int, cardH: CGFloat) -> CGFloat {
     let r = rows(for: itemCount)
-    return CGFloat(r) * (cardH + 34 + 12) // card + title + spacing
+    return CGFloat(r) * (cardH + 34 + 12)
   }
   private func dynamicGridOuterHeight(itemCount: Int) -> CGFloat {
     let r = rows(for: itemCount)
     return CGFloat(r) * 260
   }
-
-  // MARK: Sections + Components
 
   private func pillHeader(text: String, tint: Color) -> some View {
     HStack {
@@ -546,10 +555,10 @@ struct MoviesView: View {
     return Array(filtered.dropFirst(start).prefix(perPage))
   }
 
-  // MARK: Continue Watching (local store)
+  // MARK: Continue Watching
 
   private var progressKey: String { "s2vids:progress:\(email.isEmpty ? "anon" : email)" }
-  @State private var progress: [String: WatchProgress] = [:] // movieId -> progress
+  @State private var progress: [String: WatchProgress] = [:]
 
   private var continueWatchingItems: [Movie] {
     let ids = progress
@@ -657,20 +666,67 @@ struct MoviesView: View {
     playerStream = m.streamUrl
     currentMovieId = m.id
 
-    let item = AVPlayerItem(url: URL(string: m.streamUrl)!)
+    playerFailed = false
+    playerStatusMsg = ""
+    httpWarning = false
+    itemStatusObserver?.invalidate()
+    itemStatusObserver = nil
+
+    guard let url = resolveStreamURL(m.streamUrl) else {
+      playerFailed = true
+      playerStatusMsg = "Bad or relative stream URL."
+      playerOpen = true
+      return
+    }
+
+    print("🎬 Streaming:", url.absoluteString)
+    if url.scheme?.lowercased() == "http" {
+      httpWarning = true
+    }
+
+    let asset = AVURLAsset(url: url, options: nil)
+    let item = AVPlayerItem(asset: asset)
     let p = AVPlayer(playerItem: item)
     player = p
     playerOpen = true
 
-    if resumeAt > 1 {
-      NotificationCenter.default.addObserver(forName: .AVPlayerItemNewAccessLogEntry, object: item, queue: .main) { _ in
-        let seconds = CMTimeMakeWithSeconds(resumeAt, preferredTimescale: 600)
-        p.seek(to: seconds, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-          p.play()
+    #if os(iOS)
+    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+    try? AVAudioSession.sharedInstance().setActive(true)
+    #endif
+
+    itemStatusObserver = item.observe(\.status, options: [.initial, .new]) { itm, _ in
+      DispatchQueue.main.async {
+        switch itm.status {
+        case .readyToPlay:
+          if resumeAt > 1 {
+            let t = CMTimeMakeWithSeconds(resumeAt, preferredTimescale: 600)
+            p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { _ in p.play() }
+          } else {
+            p.play()
+          }
+        case .failed:
+          self.playerFailed = true
+          self.playerStatusMsg = itm.error?.localizedDescription ?? "Failed to load stream."
+          if let el = itm.errorLog() { print("📼 errorLog:", el.events) }
+          if let al = itm.accessLog() { print("📼 accessLog:", al.events) }
+        case .unknown:
+          break
+        @unknown default:
+          break
         }
       }
-    } else {
-      p.play()
+    }
+
+    playerFailObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemFailedToPlayToEndTime,
+      object: item,
+      queue: .main
+    ) { n in
+      self.playerFailed = true
+      let err = (n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError)
+      self.playerStatusMsg = err?.localizedDescription ?? "Failed to play to end."
+      print("❌ FailedToPlayToEnd:", err ?? "nil")
     }
   }
 
@@ -683,7 +739,7 @@ struct MoviesView: View {
 
   private func startObserving(for movieId: String) {
     guard let p = player else { return }
-    let interval = CMTimeMake(value: 1, timescale: 2) // 0.5s
+    let interval = CMTimeMake(value: 1, timescale: 2)
     timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
       guard let item = p.currentItem else { return }
       let pos = CMTimeGetSeconds(time)
@@ -707,6 +763,18 @@ struct MoviesView: View {
       p.removeTimeObserver(obs)
     }
     timeObserver = nil
+
+    itemStatusObserver?.invalidate()
+    itemStatusObserver = nil
+
+    if let token = playerFailObserver {
+      NotificationCenter.default.removeObserver(token)
+      playerFailObserver = nil
+    }
+
+    #if os(iOS)
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #endif
   }
 
   private func saveProgress() {
@@ -736,10 +804,8 @@ struct MoviesView: View {
           return
         }
 
-        // Keep a copy for quick debug
         lastMoviesRawJSON = String(data: data, encoding: .utf8) ?? ""
 
-        // ✅ Be liberal in what we accept — array OR wrapped + snake_case keys
         let parsed = try JSONSerialization.jsonObject(with: data, options: [])
         let rows: [[String: Any]]
         if let arr = parsed as? [[String: Any]] {
@@ -754,33 +820,22 @@ struct MoviesView: View {
         }
 
         let mapped: [Movie] = rows.compactMap { o in
-          // id: "id" | "movie_id"
           let id = (o["id"] as? String)
               ?? (o["movie_id"] as? String)
               ?? (o["id"] as? Int).map(String.init)
               ?? (o["movie_id"] as? Int).map(String.init)
-
-          // title
           let title = (o["title"] as? String)
-
-          // posterUrl: "posterUrl" | "poster_url"
           let poster = (o["posterUrl"] as? String) ?? (o["poster_url"] as? String)
-
-          // streamUrl: "streamUrl" | "stream_url"
           let stream = (o["streamUrl"] as? String) ?? (o["stream_url"] as? String)
-
-          // year may be string or int
           let year: Int? = {
             if let y = o["year"] as? Int { return y }
             if let ys = o["year"] as? String, let yi = Int(ys) { return yi }
             return nil
           }()
-
           guard let idSafe = id, let titleSafe = title, let streamSafe = stream else { return nil }
           return Movie(id: idSafe, title: titleSafe, posterUrl: poster, streamUrl: streamSafe, year: year)
         }
 
-        // If JSON was already a typed array that matches Movie, fall back to decoding directly
         if mapped.isEmpty {
           if let arr = try? JSONDecoder().decode([Movie].self, from: data) {
             allMovies = arr
@@ -884,19 +939,16 @@ struct MoviesView: View {
     }
   }
 
-  // ⬇️ Refresh helper (runs on main actor; uses your existing loader functions)
   private func refreshMovies() async {
     await MainActor.run {
       page = 1
-      loadFavorites()   // reload favorites in case they changed on another screen
+      loadFavorites()
       bootstrap()
       loadAll()
       loadTrending()
       loadFree()
     }
   }
-
-  // MARK: Helpers
 
   private func matchMovieByTitle(_ title: String, year: Int?) -> Movie? {
     let want = canonical(title)
@@ -940,7 +992,6 @@ struct MoviesView: View {
     } catch { }
   }
 
-  /// Prefer an explicit poster only if it's an absolute http(s) URL; otherwise use /api/poster.
   private func posterURL(for title: String, year: Int?, fallback: String? = nil, explicit: String? = nil) -> URL? {
     if let explicit = explicit,
        let u = URL(string: explicit),
@@ -960,7 +1011,6 @@ struct MoviesView: View {
     return nil
   }
 
-  // Canonicalize like web
   private func canonical(_ s: String) -> String {
     var t = s.lowercased()
     t = t.replacingOccurrences(of: "’", with: "").replacingOccurrences(of: "'", with: "")
@@ -973,7 +1023,6 @@ struct MoviesView: View {
     for art in ["the ", "a ", "an "] {
       if t.hasPrefix(art) { t = String(t.dropFirst(art.count)) ; break }
     }
-    // Handle trailing ", The" style just like web
     if let m = t.range(of: #"^(.+),\s+(the|a|an)$"#, options: .regularExpression) {
       let parts = t[m].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
       if parts.count == 2 { t = "\(parts[1]) \(parts[0])" }
@@ -982,7 +1031,7 @@ struct MoviesView: View {
   }
 }
 
-// MARK: - Local helpers (detents + buttons) so we don't depend on other files
+// MARK: - Local helpers
 
 private struct MoviesDetentsCompatMediumLarge: ViewModifier {
   func body(content: Content) -> some View {
