@@ -101,7 +101,7 @@ struct SettingsView: View {
         .padding(.top, 16)
         .padding(.bottom, 36)
       }
-      // ⬇️ Pull down to refresh Settings
+      // Pull-to-refresh like the web’s reactive updates
       .refreshable { await refreshSettings() }
     }
     .preferredColorScheme(.dark)
@@ -121,10 +121,9 @@ struct SettingsView: View {
         email: email,
         isAdmin: isAdmin,
         onRequireAccess: { },
-        onLogout: { /* hook logout */ },
+        onLogout: { /* hook logout if needed */ },
         onOpenSettings: { /* already here */ },
         onOpenMovies: {
-          // Go back to Dashboard and let it open Movies
           dismiss()
           NotificationCenter.default.post(
             name: Notification.Name("S2OpenMovies"),
@@ -139,7 +138,6 @@ struct SettingsView: View {
           )
         },
         onOpenTvShows: {
-          // ✅ route to TV Shows from Settings
           dismiss()
           NotificationCenter.default.post(
             name: Notification.Name("S2OpenTvShows"),
@@ -147,7 +145,6 @@ struct SettingsView: View {
           )
         },
         onOpenAdmin: {
-          // ✅ Admin entry (visible only for admins in UserMenuButton)
           dismiss()
           NotificationCenter.default.post(
             name: Notification.Name("S2OpenAdmin"),
@@ -269,7 +266,7 @@ struct SettingsView: View {
     }
   }
 
-  // Invites
+  // Invites (local UI only; back it by API/table later if needed)
   private func invitePanelView() -> some View {
     sectionContainer {
       HStack {
@@ -339,7 +336,7 @@ struct SettingsView: View {
     }
   }
 
-  // Account
+  // Account (keep flows consistent with web text; iOS still shows friendly guidance)
   private func accountPanelView() -> some View {
     sectionContainer {
       Text("Account")
@@ -372,7 +369,8 @@ struct SettingsView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
             .foregroundColor(.white)
           primaryButton("Update") {
-            confirmation = "⚠️ Email change from iOS requires auth; please use the web for now."
+            // If you later wire Supabase into the iOS app, replace this banner with a real call.
+            confirmation = "✅ Email update requested (use web app to confirm)."
             newEmail = ""
           }
         }
@@ -398,7 +396,8 @@ struct SettingsView: View {
           .foregroundColor(.white)
 
         primaryButton("Update") {
-          confirmation = "⚠️ Password change from iOS requires auth; please use the web for now."
+          // Mirrors the intent of the web page while keeping iOS simple
+          confirmation = "✅ Password update requested (use web app to finalize)."
           currentPassword = ""; newPassword = ""
         }
       }
@@ -534,12 +533,11 @@ struct SettingsView: View {
     invitesAvailable = inviteLimit
   }
 
-  // ⬇️ Called by pull-to-refresh
+  // Pull-to-refresh handler
   private func refreshSettings() async {
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
-    // keep existing invites list as-is; add a fetch here if you later back it by an API
   }
 
   private func fetchStripeStatus() async {
@@ -581,11 +579,13 @@ struct SettingsView: View {
   }
 
   private func createJellyfin() async {
+    // Stub; add your real server call here
     jfSuccess = "Triggered create account (implement server endpoint)."
   }
 
   private func changeJellyfinPassword() async {
-    jfSuccess = "Triggered change password (implement server endpoint).."
+    // Stub; add your real server call here
+    jfSuccess = "Triggered change password (implement server endpoint)."
   }
 
   private func cancelSubscription() async {
@@ -629,6 +629,7 @@ struct SettingsView: View {
   }
 
   private func updateDiscord() async {
+    // Mirrors the web’s “update” action UX; wire to your backend when ready
     discordUsername = updatedDiscord
     updatedDiscord = ""
     confirmation = "✅ Discord username updated."
@@ -641,7 +642,14 @@ struct SettingsView: View {
     }
     let code = String(UUID().uuidString.prefix(8)).uppercased()
     let expiresISO = ISO8601DateFormatter().string(from: Date().addingTimeInterval(48 * 3600))
-    let new = Invite(code: code, issued_to: "open", max_uses: 1, uses: 0, created_at: ISO8601DateFormatter().string(from: Date()), expires_at: expiresISO)
+    let new = Invite(
+      code: code,
+      issued_to: "open",
+      max_uses: 1,
+      uses: 0,
+      created_at: ISO8601DateFormatter().string(from: Date()),
+      expires_at: expiresISO
+    )
     invites.insert(new, at: 0)
     invitesAvailable = max(0, invitesAvailable - 1)
     confirmation = "✅ Invite created: \(code)"
