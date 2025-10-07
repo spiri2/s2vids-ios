@@ -130,13 +130,17 @@ struct DiscoverView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
       }
+      // ⬇️ Pull-to-refresh
+      .refreshable {
+        await refreshAll()
+      }
     }
     .preferredColorScheme(.dark)
-    .onAppear {
-      bootstrapAccess()
-      loadRequestedIds()
-      loadLibrary()
-      fetchPage()
+    .task {
+      await bootstrapAccessAsync()
+      await loadRequestedIdsAsync()
+      await loadLibraryAsync()
+      await fetchPageAsync()
     }
     // Getting Started
     .sheet(isPresented: $showGettingStarted) {
@@ -199,10 +203,14 @@ struct DiscoverView: View {
         onOpenTvShows: {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
+        },
+        onOpenAdmin: {
+          dismiss()
+          NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil)
         }
       )
     }
-    .zIndex(10_000) // keep menu above everything if a popup appears
+    .zIndex(10_000) // keep menu above everything
   }
 
   // MARK: Search Bar
@@ -215,14 +223,14 @@ struct DiscoverView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 10)
-        .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
+          .fill(Color(red: 0.08, green: 0.10, blue: 0.17)))
         .foregroundColor(.white)
         .onSubmit {
           page = 1
-          fetchPage()
+          Task { await fetchPageAsync() }
         }
       if !query.isEmpty {
-        Button("Clear") { query = ""; page = 1; fetchPage() }
+        Button("Clear") { query = ""; page = 1; Task { await fetchPageAsync() } }
           .buttonStyle(MoviesSecondaryButtonStyle())
       }
     }
@@ -232,11 +240,11 @@ struct DiscoverView: View {
 
   private var paginationBar: some View {
     HStack {
-      Button("First") { if page > 1 { page = 1; fetchPage() } }
+      Button("First") { if page > 1 { page = 1; Task { await fetchPageAsync() } } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page <= 1)
 
-      Button("Prev") { if page > 1 { page -= 1; fetchPage() } }
+      Button("Prev") { if page > 1 { page -= 1; Task { await fetchPageAsync() } } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page <= 1)
 
@@ -246,17 +254,17 @@ struct DiscoverView: View {
         .foregroundColor(.white.opacity(0.8))
       Spacer()
 
-      Button("Next") { if page < totalPages { page += 1; fetchPage() } }
+      Button("Next") { if page < totalPages { page += 1; Task { await fetchPageAsync() } } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page >= totalPages)
 
-      Button("Last") { if page < totalPages { page = totalPages; fetchPage() } }
+      Button("Last") { if page < totalPages { page = totalPages; Task { await fetchPageAsync() } } }
         .buttonStyle(MoviesSecondaryButtonStyle())
         .disabled(loading || page >= totalPages)
     }
   }
 
-  // MARK: Grid (adaptive — no GeometryReader, no zIndex)
+  // MARK: Grid
 
   private var gridSection: some View {
     Group {
@@ -361,33 +369,38 @@ struct DiscoverView: View {
     playerOpen = false
   }
 
-  // MARK: Networking
+  // MARK: Networking (async)
 
-  private func fetchPage() {
-    loading = true
-    errText = nil
-    Task {
-      defer { loading = false }
-      do {
-        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/discover"),
-                                  resolvingAgainstBaseURL: false)!
-        comps.queryItems = [ .init(name: "page", value: String(page)) ]
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !q.isEmpty {
-          comps.queryItems?.append(.init(name: "query", value: q)) // let URLComponents encode
-        }
+  private func refreshAll() async {
+    await bootstrapAccessAsync()
+    await loadRequestedIdsAsync()
+    await loadLibraryAsync()
+    await fetchPageAsync()
+  }
 
-        let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-        let decoded = try JSONDecoder().decode(DiscoverResponse.self, from: data)
+  private func fetchPageAsync() async {
+    await MainActor.run { loading = true; errText = nil }
+    defer { Task { await MainActor.run { loading = false } } }
+    do {
+      var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/discover"),
+                                resolvingAgainstBaseURL: false)!
+      comps.queryItems = [ .init(name: "page", value: String(page)) ]
+      let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !q.isEmpty {
+        comps.queryItems?.append(.init(name: "query", value: q))
+      }
+
+      let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+      let decoded = try JSONDecoder().decode(DiscoverResponse.self, from: data)
+      await MainActor.run {
         items = decoded.results ?? []
         totalPages = max(1, decoded.totalPages ?? 1)
         totalResults = max(0, decoded.totalResults ?? items.count)
-      } catch {
-        items = []
-        totalPages = 1
-        totalResults = 0
-        errText = "Failed to load discover."
+      }
+    } catch {
+      await MainActor.run {
+        items = []; totalPages = 1; totalResults = 0; errText = "Failed to load discover."
       }
     }
   }
@@ -395,11 +408,11 @@ struct DiscoverView: View {
   /// Submit a Jellyseerr request; only allowed for active/trial/admin.
   private func request(_ it: DiscoverItem) async {
     guard hasAccess || effectiveIsAdmin else {
-      showGettingStarted = true
+      await MainActor.run { showGettingStarted = true }
       return
     }
-    loadingId = it.id
-    defer { loadingId = nil }
+    await MainActor.run { loadingId = it.id }
+    defer { Task { await MainActor.run { loadingId = nil } } }
     do {
       var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/request"))
       req.httpMethod = "POST"
@@ -417,97 +430,92 @@ struct DiscoverView: View {
       let (data, resp) = try await URLSession.shared.data(for: req)
       guard let http = resp as? HTTPURLResponse else { return }
 
-      let text = String(data: data, encoding: .utf8) ?? ""
-      var json: [String: Any] = [:]
-      if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-        json = obj
-      }
-
       if http.statusCode == 409 {
-        requestedIds.insert(it.id)
+        await MainActor.run { requestedIds.insert(it.id) }
         return
       }
 
       guard (200...299).contains(http.statusCode) else {
-        print("Request failed (\(http.statusCode)): \(json["error"] as? String ?? text)")
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        print("Request failed (\(http.statusCode)): \(json?["error"] as? String ?? text)")
         return
       }
 
-      requestedIds.insert(it.id)
+      await MainActor.run { requestedIds.insert(it.id) }
     } catch {
       print("Fatal request error: \(error)")
     }
   }
 
-  private func loadRequestedIds() {
-    Task {
-      var acc = Set<Int>()
-      let pageSize = 100
-      for page in 0..<200 {
-        do {
-          var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/requests"),
-                                    resolvingAgainstBaseURL: false)!
-          comps.queryItems = [
-            .init(name: "filter", value: "all"),
-            .init(name: "take", value: String(pageSize)),
-            .init(name: "skip", value: String(page * pageSize))
-          ]
-          let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-          guard (resp as? HTTPURLResponse)?.statusCode == 200 else { break }
-
-          let any = try JSONSerialization.jsonObject(with: data)
-          var arr: [[String: Any]] = []
-          if let dict = any as? [String: Any], let r = dict["results"] as? [[String: Any]] {
-            arr = r
-          } else if let r = any as? [[String: Any]] {
-            arr = r
-          }
-
-          if arr.isEmpty { break }
-          for o in arr {
-            if let a = (o["media"] as? [String: Any])?["tmdbId"] as? Int { acc.insert(a) }
-            if let b = (o["mediaInfo"] as? [String: Any])?["tmdbId"] as? Int { acc.insert(b) }
-            if let c = o["tmdbId"] as? Int { acc.insert(c) }
-          }
-          if arr.count < pageSize { break }
-        } catch { break }
-      }
-      self.requestedIds = acc
-    }
-  }
-
-  private func loadLibrary() {
-    Task {
+  private func loadRequestedIdsAsync() async {
+    var acc = Set<Int>()
+    let pageSize = 100
+    for page in 0..<200 {
       do {
-        let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
-        let (data, resp) = try await URLSession.shared.data(from: url)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let list = try JSONDecoder().decode([Movie].self, from: data)
-        library = list
-      } catch {
-        library = []
-      }
-    }
-  }
-
-  private func bootstrapAccess() {
-    guard !email.isEmpty else { accessResolved = true; return }
-    Task {
-      defer { accessResolved = true }
-      do {
-        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+        var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/jellyseerr/requests"),
                                   resolvingAgainstBaseURL: false)!
-        comps.queryItems = [ .init(name: "email", value: email) ]
+        comps.queryItems = [
+          .init(name: "filter", value: "all"),
+          .init(name: "take", value: String(pageSize)),
+          .init(name: "skip", value: String(page * pageSize))
+        ]
         let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-        let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
-        let status = (s?.status ?? "")
-        let active = (s?.active ?? false)
-        let trialEnd = (s?.trial_end ?? 0)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { break }
+
+        let any = try JSONSerialization.jsonObject(with: data)
+        var arr: [[String: Any]] = []
+        if let dict = any as? [String: Any], let r = dict["results"] as? [[String: Any]] {
+          arr = r
+        } else if let r = any as? [[String: Any]] {
+          arr = r
+        }
+
+        if arr.isEmpty { break }
+        for o in arr {
+          if let a = (o["media"] as? [String: Any])?["tmdbId"] as? Int { acc.insert(a) }
+          if let b = (o["mediaInfo"] as? [String: Any])?["tmdbId"] as? Int { acc.insert(b) }
+          if let c = o["tmdbId"] as? Int { acc.insert(c) }
+        }
+        if arr.count < pageSize { break }
+      } catch { break }
+    }
+    await MainActor.run { self.requestedIds = acc }
+  }
+
+  private func loadLibraryAsync() async {
+    do {
+      let url = AppConfig.apiBase.appendingPathComponent("api/movies/list")
+      let (data, resp) = try await URLSession.shared.data(from: url)
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+        await MainActor.run { library = [] }
+        return
+      }
+      let list = try JSONDecoder().decode([Movie].self, from: data)
+      await MainActor.run { library = list }
+    } catch {
+      await MainActor.run { library = [] }
+    }
+  }
+
+  private func bootstrapAccessAsync() async {
+    guard !email.isEmpty else { await MainActor.run { accessResolved = true }; return }
+    defer { Task { await MainActor.run { accessResolved = true } } }
+    do {
+      var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
+                                resolvingAgainstBaseURL: false)!
+      comps.queryItems = [ .init(name: "email", value: email) ]
+      let (data, resp) = try await URLSession.shared.data(from: comps.url!)
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+      let s = try? JSONDecoder().decode(StripeStatusResponse.self, from: data)
+      let status = (s?.status ?? "")
+      let active = (s?.active ?? false)
+      let trialEnd = (s?.trial_end ?? 0)
+      await MainActor.run {
         resolvedStatus = active ? "active" : status
         resolvedTrialing = (status == "trialing") || trialEnd > 0
-      } catch { }
-    }
+      }
+    } catch { }
   }
 
   // MARK: - Helpers
