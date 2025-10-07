@@ -211,7 +211,8 @@ struct TvShowsView: View {
         onOpenDiscover: {
           dismiss()
           NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
-        }
+        },
+        onOpenTvShows: { } // ✅ already here (no-op)
       )
     }
     .padding(.horizontal, 16)
