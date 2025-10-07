@@ -149,6 +149,8 @@ struct MoviesView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
       }
+      // ⬇️ Pull-to-refresh (re-runs existing loaders)
+      .refreshable { await refreshMovies() }
     }
     .preferredColorScheme(.dark)
     .onAppear {
@@ -879,6 +881,18 @@ struct MoviesView: View {
         resolvedTrialing = false
       }
       accessResolved = true
+    }
+  }
+
+  // ⬇️ Refresh helper (runs on main actor; uses your existing loader functions)
+  private func refreshMovies() async {
+    await MainActor.run {
+      page = 1
+      loadFavorites()   // reload favorites in case they changed on another screen
+      bootstrap()
+      loadAll()
+      loadTrending()
+      loadFree()
     }
   }
 
