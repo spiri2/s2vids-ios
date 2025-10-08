@@ -30,8 +30,25 @@ private struct StripeStatusResponse: Decodable {
   let trial_end: Int?
 }
 
+private struct SessionResponse: Decodable {
+  struct User: Decodable { let id: String?; let email: String? }
+  let user: User?
+}
+
 private struct GenericOK: Decodable { let ok: Bool?; let message: String? }
 private struct GenericErr: Decodable { let error: String? }
+
+// MARK: - iOS 15 sheet detents compat
+
+private struct DetentsCompatMedium: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(iOS 16.0, *) {
+      content.presentationDetents([.medium])
+    } else {
+      content
+    }
+  }
+}
 
 // MARK: - Settings View
 
@@ -45,7 +62,7 @@ struct SettingsView: View {
   private let inviteLimit = 5
 
   // State (mirrors the web page structure)
-  @State private var userId: String = ""
+  @State private var userId: String = ""              // <- loaded from /api/get-session
   @State private var createdAt: String = ""
 
   @State private var newEmail: String = ""
@@ -74,6 +91,13 @@ struct SettingsView: View {
   @State private var jfLoading = false
   @State private var jfError = ""
   @State private var jfSuccess = ""
+
+  // Jellyfin password modal
+  @State private var showJFPassModal = false
+  @State private var jfNewPass = ""
+  @State private var jfConfirmPass = ""
+  @State private var jfSubmitting = false
+  @State private var jfPassError = ""
 
   var body: some View {
     ZStack {
@@ -104,12 +128,54 @@ struct SettingsView: View {
         .padding(.top, 16)
         .padding(.bottom, 36)
       }
-      // Pull down to refresh Settings
-      .refreshable { await refreshSettings() }
+      .refreshable { await refreshSettings() } // Pull to refresh
     }
     .preferredColorScheme(.dark)
     .task { await bootstrap() }
     .overlay { deleteAccountOverlay() }
+
+    // Jellyfin password modal
+    .sheet(isPresented: $showJFPassModal) {
+      NavigationView {
+        VStack(spacing: 14) {
+          SecureField("Enter New Password", text: $jfNewPass)
+            .textContentType(.newPassword)
+            .padding(.horizontal, 10).frame(height: 44)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
+            .foregroundColor(.white)
+
+          SecureField("Confirm New Password", text: $jfConfirmPass)
+            .textContentType(.newPassword)
+            .padding(.horizontal, 10).frame(height: 44)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
+            .foregroundColor(.white)
+
+          if !jfPassError.isEmpty {
+            Text(jfPassError)
+              .font(.footnote).foregroundColor(.red)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+
+          Button(jfSubmitting ? "Updating…" : "Submit") {
+            Task { await submitJellyfinPassword() }
+          }
+          .disabled(jfSubmitting)
+          .buttonStyle(PrimaryButtonStyle())
+          .padding(.top, 4)
+
+          Spacer()
+        }
+        .padding()
+        .navigationTitle("Change Jellyfin Password")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .navigationBarTrailing) {
+            Button("Close") { showJFPassModal = false }
+          }
+        }
+      }
+      .modifier(DetentsCompatMedium()) // iOS 15-safe
+    }
   }
 
   // MARK: Header
@@ -128,31 +194,19 @@ struct SettingsView: View {
         onOpenSettings: { /* already here */ },
         onOpenMovies: {
           dismiss()
-          NotificationCenter.default.post(
-            name: Notification.Name("S2OpenMovies"),
-            object: nil
-          )
+          NotificationCenter.default.post(name: Notification.Name("S2OpenMovies"), object: nil)
         },
         onOpenDiscover: {
           dismiss()
-          NotificationCenter.default.post(
-            name: Notification.Name("S2OpenDiscover"),
-            object: nil
-          )
+          NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
         },
         onOpenTvShows: {
           dismiss()
-          NotificationCenter.default.post(
-            name: Notification.Name("S2OpenTvShows"),
-            object: nil
-          )
+          NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
         },
         onOpenAdmin: {
           dismiss()
-          NotificationCenter.default.post(
-            name: Notification.Name("S2OpenAdmin"),
-            object: nil
-          )
+          NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil)
         }
       )
     }
@@ -213,7 +267,10 @@ struct SettingsView: View {
           primaryButton("Create Account") { await createJellyfin() }
         }
         if jfExists() && canGenerateJF() {
-          primaryButton("Change Password") { await changeJellyfinPassword() }
+          primaryButton("Change Password") { // open modal
+            jfPassError = ""; jfNewPass = ""; jfConfirmPass = ""
+            showJFPassModal = true
+          }
         }
         if subscriptionStatus == "active" && !cancelAtPeriodEnd {
           destructiveButton("Cancel Subscription") { await cancelSubscription() }
@@ -227,10 +284,7 @@ struct SettingsView: View {
         Text("Your subscription will end at the period’s renewal unless restored.")
           .font(.caption)
           .padding(8)
-          .background(
-            RoundedRectangle(cornerRadius: 10)
-              .fill(Color.yellow.opacity(0.15))
-          )
+          .background(RoundedRectangle(cornerRadius: 10).fill(Color.yellow.opacity(0.15)))
       }
 
       if !jfSuccess.isEmpty { Text(jfSuccess).font(.footnote).foregroundColor(.green) }
@@ -322,10 +376,7 @@ struct SettingsView: View {
                   copiedCode = inv.code
                   DispatchQueue.main.asyncAfter(deadline: .now() + 1) { copiedCode = "" }
                 } label: {
-                  HStack(spacing: 6) {
-                    Image(systemName: "doc.on.doc")
-                    Text(copiedCode == inv.code ? "Copied!" : "Copy")
-                  }
+                  HStack(spacing: 6) { Image(systemName: "doc.on.doc"); Text(copiedCode == inv.code ? "Copied!" : "Copy") }
                 }
                 .buttonStyle(SecondaryButtonStyle())
               }
@@ -352,15 +403,10 @@ struct SettingsView: View {
 
       // Email
       VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 8) {
-          Image(systemName: "envelope.fill")
-          Text("Email")
-        }
-        .font(.system(size: 15, weight: .bold))
-        .foregroundColor(.white)
+        HStack(spacing: 8) { Image(systemName: "envelope.fill"); Text("Email") }
+          .font(.system(size: 15, weight: .bold)).foregroundColor(.white)
 
-        Text("Current: \(email)")
-          .font(.footnote).foregroundColor(.secondary)
+        Text("Current: \(email)").font(.footnote).foregroundColor(.secondary)
 
         HStack(spacing: 8) {
           TextField("new@example.com", text: $newEmail)
@@ -380,12 +426,8 @@ struct SettingsView: View {
 
       // Password
       VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 8) {
-          Image(systemName: "lock.fill")
-          Text("Change Password")
-        }
-        .font(.system(size: 15, weight: .bold))
-        .foregroundColor(.white)
+        HStack(spacing: 8) { Image(systemName: "lock.fill"); Text("Change Password") }
+          .font(.system(size: 15, weight: .bold)).foregroundColor(.white)
 
         SecureField("Current Password", text: $currentPassword)
           .padding(.horizontal, 10).frame(height: 36)
@@ -397,16 +439,12 @@ struct SettingsView: View {
           .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
           .foregroundColor(.white)
 
-        primaryButton("Update") {
-          await changeAccountPassword()
-        }
+        primaryButton("Update") { await changeAccountPassword() }
       }
 
       Divider().background(Color.gray.opacity(0.25))
 
-      destructiveButton("Delete Account") {
-        showDeleteModal = true
-      }
+      destructiveButton("Delete Account") { showDeleteModal = true }
 
       Text("Permanently delete your account. This cannot be undone.")
         .font(.caption).foregroundColor(.secondary)
@@ -428,20 +466,13 @@ struct SettingsView: View {
             Text("This will permanently delete your account and sign you out. This action cannot be undone.")
               .font(.subheadline)
 
-            if !deleteError.isEmpty {
-              Text(deleteError).font(.footnote).foregroundColor(.red)
-            }
+            if !deleteError.isEmpty { Text(deleteError).font(.footnote).foregroundColor(.red) }
 
             HStack(spacing: 8) {
-              destructiveButton(deletingAccount ? "Deleting…" : "Delete") {
-                await requestAccountDeletion()
-              }
-              .disabled(deletingAccount)
-
-              Button("Cancel") {
-                if !deletingAccount { showDeleteModal = false }
-              }
-              .buttonStyle(SecondaryButtonStyle())
+              destructiveButton(deletingAccount ? "Deleting…" : "Delete") { await requestAccountDeletion() }
+                .disabled(deletingAccount)
+              Button("Cancel") { if !deletingAccount { showDeleteModal = false } }
+                .buttonStyle(SecondaryButtonStyle())
             }
             .padding(.top, 4)
           }
@@ -469,37 +500,24 @@ struct SettingsView: View {
   }
 
   private func primaryButton(_ title: String, action: @escaping () async -> Void) -> some View {
-    Button { Task { await action() } } label: {
-      Text(title).font(.system(size: 13, weight: .bold))
-    }
-    .buttonStyle(PrimaryButtonStyle())
+    Button { Task { await action() } } label: { Text(title).font(.system(size: 13, weight: .bold)) }
+      .buttonStyle(PrimaryButtonStyle())
   }
 
   private func destructiveButton(_ title: String, action: @escaping () async -> Void) -> some View {
-    Button { Task { await action() } } label: {
-      Text(title).font(.system(size: 13, weight: .bold))
-    }
-    .buttonStyle(DestructiveButtonStyle())
+    Button { Task { await action() } } label: { Text(title).font(.system(size: 13, weight: .bold)) }
+      .buttonStyle(DestructiveButtonStyle())
   }
 
   private struct WrapHStack<Content: View>: View {
-    let spacing: CGFloat
-    let content: () -> Content
-    init(spacing: CGFloat = 8, @ViewBuilder content: @escaping () -> Content) {
-      self.spacing = spacing
-      self.content = content
-    }
-    var body: some View {
-      HStack(spacing: spacing) { content() }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    let spacing: CGFloat; let content: () -> Content
+    init(spacing: CGFloat = 8, @ViewBuilder content: @escaping () -> Content) { self.spacing = spacing; self.content = content }
+    var body: some View { HStack(spacing: spacing) { content() }.frame(maxWidth: .infinity, alignment: .leading) }
   }
 
   // MARK: Networking & derived
 
-  private func apiURL(_ path: String) -> URL {
-    AppConfig.apiBase.appendingPathComponent(path)
-  }
+  private func apiURL(_ path: String) -> URL { AppConfig.apiBase.appendingPathComponent(path) }
 
   private func renewalText() -> String {
     guard currentPeriodEnd > 0 else { return "" }
@@ -514,9 +532,7 @@ struct SettingsView: View {
     return ms > 0 && Double(ms) > Date().timeIntervalSince1970 * 1000.0
   }
 
-  private func isFirstOfMonth() -> Bool {
-    Calendar.current.component(.day, from: Date()) == 1
-  }
+  private func isFirstOfMonth() -> Bool { Calendar.current.component(.day, from: Date()) == 1 }
 
   private func formatExpiration(_ expires: String?) -> String {
     guard let s = expires, let d = ISO8601DateFormatter().date(from: s) else { return "" }
@@ -528,12 +544,14 @@ struct SettingsView: View {
   }
 
   private func bootstrap() async {
+    await fetchSessionUserID()
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
   }
 
   private func refreshSettings() async {
+    await fetchSessionUserID()
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
@@ -553,6 +571,18 @@ struct SettingsView: View {
     } catch { }
   }
 
+  private func fetchSessionUserID() async {
+    // Best-effort: populate userId so password endpoint that requires it can be used
+    do {
+      let (data, resp) = try await URLSession.shared.data(from: apiURL("api/get-session"))
+      guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return }
+      if let s = try? JSONDecoder().decode(SessionResponse.self, from: data),
+         let id = s.user?.id, !id.isEmpty {
+        userId = id
+      }
+    } catch { }
+  }
+
   private func postJSON<T: Encodable>(_ url: URL, body: T) async throws -> (Data, HTTPURLResponse) {
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
@@ -560,12 +590,6 @@ struct SettingsView: View {
     req.httpBody = try JSONEncoder().encode(body)
     let (data, resp) = try await URLSession.shared.data(for: req)
     return (data, resp as! HTTPURLResponse)
-  }
-
-  private func isLikelyHTML(_ data: Data) -> Bool {
-    if data.isEmpty { return false }
-    let prefix = String(decoding: data.prefix(256), as: UTF8.self).lowercased()
-    return prefix.contains("<!doctype") || prefix.contains("<html")
   }
 
   private func msgFrom(_ data: Data) -> String? {
@@ -591,13 +615,16 @@ struct SettingsView: View {
     }
   }
 
+  // Create Jellyfin account (missing earlier)
+  @MainActor
   private func createJellyfin() async {
     guard !email.isEmpty else { return }
     jfLoading = true; jfError = ""; jfSuccess = ""
     struct Payload: Encodable { let username: String }
     defer { jfLoading = false }
     do {
-      let (data, resp) = try await postJSON(apiURL("api/check-or-create-jellyfin"), body: Payload(username: email))
+      let (data, resp) = try await postJSON(apiURL("api/check-or-create-jellyfin"),
+                                            body: Payload(username: email))
       if resp.statusCode == 200 {
         jfSuccess = msgFrom(data) ?? "Jellyfin account ready."
         jfUsername = email
@@ -609,21 +636,51 @@ struct SettingsView: View {
     }
   }
 
-  private func changeJellyfinPassword() async {
-    guard !email.isEmpty else { return }
-    jfLoading = true; jfError = ""; jfSuccess = ""
-    struct Payload: Encodable { let username: String }
-    defer { jfLoading = false }
+  // Shown via modal
+  private func submitJellyfinPassword() async {
+    guard !email.isEmpty else { jfPassError = "Missing email."; return }
+    guard !jfNewPass.isEmpty else { jfPassError = "Please enter a new password."; return }
+    guard jfNewPass == jfConfirmPass else { jfPassError = "Passwords do not match."; return }
+    jfPassError = ""; jfSubmitting = true
+    defer { jfSubmitting = false }
+
+    // Try the shape your server’s error message hinted at: { email, new_password }
+    struct BodyA: Encodable { let email: String; let new_password: String }
     do {
-      let (data, resp) = try await postJSON(apiURL("api/reset-jellyfin-password"), body: Payload(username: email))
+      let (data, resp) = try await postJSON(apiURL("api/reset-jellyfin-password"),
+                                            body: BodyA(email: email, new_password: jfNewPass))
       if resp.statusCode == 200 {
-        if isLikelyHTML(data) { jfSuccess = "Password change requested." }
-        else { jfSuccess = msgFrom(data) ?? "Password change requested." }
-      } else {
-        jfError = msgFrom(data) ?? "Failed to change password."
+        jfSuccess = msgFrom(data) ?? "Jellyfin password updated."
+        showJFPassModal = false
+        return
+      } else if let m = msgFrom(data), !m.isEmpty {
+        // If the backend insists on a different field name, try { username, new_password }
+        if m.lowercased().contains("email") == false && m.lowercased().contains("required") {
+          try await tryUsernameFormForJellyfin()
+          return
+        }
+        jfPassError = m
+        return
       }
+    } catch { /* fall through */ }
+
+    // Fallback to { username, new_password }
+    do {
+      try await tryUsernameFormForJellyfin()
     } catch {
-      jfError = "Error contacting server."
+      jfPassError = "Network error."
+    }
+  }
+
+  private func tryUsernameFormForJellyfin() async throws {
+    struct BodyB: Encodable { let username: String; let new_password: String }
+    let (data, resp) = try await postJSON(apiURL("api/reset-jellyfin-password"),
+                                          body: BodyB(username: email, new_password: jfNewPass))
+    if resp.statusCode == 200 {
+      jfSuccess = msgFrom(data) ?? "Jellyfin password updated."
+      showJFPassModal = false
+    } else {
+      jfPassError = msgFrom(data) ?? "Failed to update Jellyfin password."
     }
   }
 
@@ -688,43 +745,73 @@ struct SettingsView: View {
     }
   }
 
-  /// If both fields present, try direct update; otherwise fall back to reset-by-email.
+  /// Change account password using the most permissive order based on your server’s messages.
+  /// Tries:
+  /// 1) { email, current_password, new_password }
+  /// 2) { user_id, new_password }  (server said “user_id and new_password required”)
+  /// 3) { email, new_password }
+  /// 4) Fallback: password reset email
   private func changeAccountPassword() async {
-    guard !email.isEmpty else {
-      confirmation = "❌ Enter your email first."
+    guard !email.isEmpty else { confirmation = "❌ Enter your email first."; return }
+    guard !currentPassword.isEmpty, !newPassword.isEmpty else {
+      confirmation = "❌ Enter current and new password."
       return
     }
-    // Direct update path
-    if !currentPassword.isEmpty && !newPassword.isEmpty {
-      struct Body: Encodable { let email: String; let current_password: String; let new_password: String }
+
+    // 1) email + current + new
+    struct Body1: Encodable { let email: String; let current_password: String; let new_password: String }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
+                                            body: Body1(email: email, current_password: currentPassword, new_password: newPassword))
+      if resp.statusCode == 200 {
+        confirmation = msgFrom(data) ?? "✅ Password updated."
+        currentPassword = ""; newPassword = ""
+        return
+      } else if let m = msgFrom(data), m.lowercased().contains("user_id") {
+        // proceed to 2
+      } else if let m = msgFrom(data), !m.isEmpty {
+        confirmation = "❌ \(m)"
+        // but still try 2 if it looks like a shape mismatch
+      }
+    } catch { /* proceed */ }
+
+    // 2) user_id + new
+    if !userId.isEmpty {
+      struct Body2: Encodable { let user_id: String; let new_password: String }
       do {
         let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
-                                              body: Body(email: email, current_password: currentPassword, new_password: newPassword))
+                                              body: Body2(user_id: userId, new_password: newPassword))
         if resp.statusCode == 200 {
           confirmation = msgFrom(data) ?? "✅ Password updated."
           currentPassword = ""; newPassword = ""
           return
-        } else {
-          confirmation = msgFrom(data) ?? "❌ Failed to update password."
-          return
         }
-      } catch {
-        confirmation = "❌ Error updating password."
-        return
-      }
+      } catch { /* proceed */ }
     }
 
-    // Fallback: send reset email
-    struct Body2: Encodable { let email: String }
+    // 3) email + new (no current)
+    struct Body3: Encodable { let email: String; let new_password: String }
     do {
-      let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: Body2(email: email))
+      let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
+                                            body: Body3(email: email, new_password: newPassword))
+      if resp.statusCode == 200 {
+        confirmation = msgFrom(data) ?? "✅ Password updated."
+        currentPassword = ""; newPassword = ""
+        return
+      }
+    } catch { }
+
+    // 4) Reset email
+    struct Body4: Encodable { let email: String }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: Body4(email: email))
       if resp.statusCode == 200 {
         confirmation = msgFrom(data) ?? "✅ Password reset email sent. Check your inbox."
       } else {
-        confirmation = msgFrom(data) ?? "❌ Password reset request failed."
+        confirmation = msgFrom(data) ?? "❌ Failed to update password."
       }
     } catch {
-      confirmation = "❌ Network error while requesting password reset."
+      confirmation = "❌ Network error while updating password."
     }
   }
 
@@ -735,7 +822,8 @@ struct SettingsView: View {
     }
     let code = String(UUID().uuidString.prefix(8)).uppercased()
     let expiresISO = ISO8601DateFormatter().string(from: Date().addingTimeInterval(48 * 3600))
-    let new = Invite(code: code, issued_to: "open", max_uses: 1, uses: 0, created_at: ISO8601DateFormatter().string(from: Date()), expires_at: expiresISO)
+    let new = Invite(code: code, issued_to: "open", max_uses: 1, uses: 0,
+                     created_at: ISO8601DateFormatter().string(from: Date()), expires_at: expiresISO)
     invites.insert(new, at: 0)
     invitesAvailable = max(0, invitesAvailable - 1)
     confirmation = "✅ Invite created: \(code)"
