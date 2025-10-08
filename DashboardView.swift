@@ -40,7 +40,7 @@ private struct WelcomeScreen: View {
         ZStack {
           Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
 
-          VStack(spacing: 8) {
+          VStack(spacing: 14) {
             // Gradient “s2vids” title
             LinearGradient(
               colors: [Color(red: 0.67, green: 0.86, blue: 1.0), Color(red: 0.70, green: 0.73, blue: 1.0)],
@@ -53,19 +53,23 @@ private struct WelcomeScreen: View {
             )
             .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
 
+            // Animated loading spinner centered
+            ProgressView()
+              .progressViewStyle(CircularProgressViewStyle())
+              .scaleEffect(1.2)
+              .tint(.white)
+
             Text("Your passport to premium cinema.")
               .font(.system(size: 14, weight: .semibold))
               .foregroundColor(Color(red: 0.73, green: 0.78, blue: 0.98).opacity(0.9))
               .padding(.top, 2)
-              .transition(.opacity)
           }
           .padding()
-          .transition(.scale(scale: 0.96).combined(with: .opacity))
+          .transition(.opacity.combined(with: .scale))
         }
-        .transition(.opacity.combined(with: .scale))
       }
     }
-    .animation(.easeInOut(duration: 0.45), value: show)
+    .animation(.easeInOut(duration: 0.35), value: show)
   }
 }
 
@@ -118,8 +122,10 @@ struct DashboardView: View {
     isAdmin || email.lowercased() == "mspiri2@outlook.com"
   }
 
-  // NEW: Welcome / loading overlay flag
-  @State private var showWelcome = true
+  // Loading overlay should show while any primary loads are in-flight
+  private var showLoadingOverlay: Bool {
+    !accessResolved || vm.loadingTrending || vm.loadingRecent || vm.loadingUpcoming
+  }
 
   var body: some View {
     ZStack {
@@ -174,21 +180,15 @@ struct DashboardView: View {
         await refreshDashboard()
       }
 
-      // ⬆️ Overlay loading screen (s2vids)
-      WelcomeScreen(show: showWelcome)
+      // ⬆️ Overlay loading screen (s2vids) that stays until content resolves
+      WelcomeScreen(show: showLoadingOverlay)
         .zIndex(120) // above everything
+        .allowsHitTesting(showLoadingOverlay)
     }
     .preferredColorScheme(.dark)
     // Run initial load via the same async path used by refresh
     .task {
       await initialBootstrap()
-    }
-    .onAppear {
-      // Show welcome immediately, auto-dismiss shortly after
-      showWelcome = true
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
-        withAnimation(.easeInOut(duration: 0.45)) { showWelcome = false }
-      }
     }
 
     // Getting Started
@@ -905,17 +905,8 @@ struct UserMenuButton: View {
               onOpenTvShows()
             }
             Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
-            Row(icon: "calendar", title: "TV Show Calendar") { open = false }
 
-            Row(icon: "arrow.up.right.square", title: "Launch Jellyfin") {
-              goOrWarn { openURL(URL(string: "https://atlas.s2vids.org/")!) }
-            }
-            Row(icon: "arrow.up.right.square", title: "Request Media") {
-              goOrWarn { openURL(URL(string: "https://req.s2vids.org/")!) }
-            }
-            Row(icon: "arrow.up.right.square", title: "Join Discord") {
-              openURL(URL(string: "https://discord.gg/cw6rQzx5Bx")!)
-            }
+            // (Removed: Launch Jellyfin, Request Media, TV Show Calendar)
 
             Row(icon: "gear", title: "Settings") {
               open = false
