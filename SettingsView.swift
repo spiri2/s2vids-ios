@@ -2,6 +2,11 @@
 //  SettingsView.swift
 //  s2vids
 //
+//  NOTE:
+//  - Expects you already have `AppConfig` with `static let apiBase: URL`
+//    and a `UserMenuButton` component in your project.
+//  - This file contains ONLY `SettingsView` and its local helpers.
+//
 
 import SwiftUI
 
@@ -31,29 +36,26 @@ private struct StripeStatusResponse: Decodable {
 }
 
 private struct SessionResponse: Decodable {
-  struct User: Decodable { let id: String?; let email: String? }
+  struct User: Decodable { let id: String?; let email: String?; let created_at: String?; let user_metadata: Meta? }
+  struct Meta: Decodable { let discord: String? }
   let user: User?
 }
 
-private struct GenericOK: Decodable { let ok: Bool?; let message: String? }
+private struct GenericOK: Decodable { let ok: Bool?; let message: String?; let status: String? }
 private struct GenericErr: Decodable { let error: String? }
 
 // MARK: - iOS 15 sheet detents compat
 
 private struct DetentsCompatMedium: ViewModifier {
   func body(content: Content) -> some View {
-    if #available(iOS 16.0, *) {
-      content.presentationDetents([.medium])
-    } else {
-      content
-    }
+    if #available(iOS 16.0, *) { content.presentationDetents([.medium]) } else { content }
   }
 }
 
 // MARK: - Settings View
 
 struct SettingsView: View {
-  // Presented from DashboardView
+  // Presented from parent
   let email: String
   let isAdmin: Bool
 
@@ -61,14 +63,12 @@ struct SettingsView: View {
   @Environment(\.dismiss) private var dismiss
   private let inviteLimit = 5
 
-  // State (mirrors the web page structure)
-  @State private var userId: String = ""              // <- loaded from /api/get-session
+  // State (web parity)
+  @State private var userId: String = ""          // from /api/get-session
   @State private var createdAt: String = ""
-
   @State private var newEmail: String = ""
   @State private var currentPassword: String = ""
   @State private var newPassword: String = ""
-
   @State private var discordUsername: String = ""
   @State private var updatedDiscord: String = ""
 
@@ -98,6 +98,7 @@ struct SettingsView: View {
   @State private var jfConfirmPass = ""
   @State private var jfSubmitting = false
   @State private var jfPassError = ""
+  @State private var jfIsReset = false   // ← create vs reset intent
 
   var body: some View {
     ZStack {
@@ -156,23 +157,18 @@ struct SettingsView: View {
               .frame(maxWidth: .infinity, alignment: .leading)
           }
 
-          Button(jfSubmitting ? "Updating…" : "Submit") {
-            Task { await submitJellyfinPassword() }
-          }
-          .disabled(jfSubmitting)
-          .buttonStyle(PrimaryButtonStyle())
-          .padding(.top, 4)
+          Button(jfSubmitting ? "Updating…" : (jfIsReset ? "Update Password" : "Create"))
+          { Task { await submitJellyfinPassword() } }
+            .disabled(jfSubmitting)
+            .buttonStyle(PrimaryButtonStyle())
+            .padding(.top, 4)
 
           Spacer()
         }
         .padding()
-        .navigationTitle("Change Jellyfin Password")
+        .navigationTitle(jfIsReset ? "Reset Jellyfin Password" : "Set Jellyfin Password")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .navigationBarTrailing) {
-            Button("Close") { showJFPassModal = false }
-          }
-        }
+        .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Close") { showJFPassModal = false } } }
       }
       .modifier(DetentsCompatMedium()) // iOS 15-safe
     }
@@ -190,24 +186,12 @@ struct SettingsView: View {
         email: email,
         isAdmin: isAdmin,
         onRequireAccess: { },
-        onLogout: { /* hook logout */ },
+        onLogout: { NotificationCenter.default.post(name: Notification.Name("S2VidsDidLogout"), object: nil) },
         onOpenSettings: { /* already here */ },
-        onOpenMovies: {
-          dismiss()
-          NotificationCenter.default.post(name: Notification.Name("S2OpenMovies"), object: nil)
-        },
-        onOpenDiscover: {
-          dismiss()
-          NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil)
-        },
-        onOpenTvShows: {
-          dismiss()
-          NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil)
-        },
-        onOpenAdmin: {
-          dismiss()
-          NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil)
-        }
+        onOpenMovies: { dismiss(); NotificationCenter.default.post(name: Notification.Name("S2OpenMovies"), object: nil) },
+        onOpenDiscover: { dismiss(); NotificationCenter.default.post(name: Notification.Name("S2OpenDiscover"), object: nil) },
+        onOpenTvShows: { dismiss(); NotificationCenter.default.post(name: Notification.Name("S2OpenTvShows"), object: nil) },
+        onOpenAdmin: { dismiss(); NotificationCenter.default.post(name: Notification.Name("S2OpenAdmin"), object: nil) }
       )
     }
     .zIndex(10_000)
@@ -215,12 +199,8 @@ struct SettingsView: View {
 
   private var greetingStripe: some View {
     HStack {
-      Text("Signed in as ")
-        .foregroundColor(.white.opacity(0.8))
-        .font(.subheadline)
-      Text(email.isEmpty ? "—" : email)
-        .foregroundColor(.white)
-        .font(.system(size: 15, weight: .bold))
+      Text("Signed in as ").foregroundColor(.white.opacity(0.8)).font(.subheadline)
+      Text(email.isEmpty ? "—" : email).foregroundColor(.white).font(.system(size: 15, weight: .bold))
       Spacer()
     }
     .padding(.vertical, 10)
@@ -237,38 +217,33 @@ struct SettingsView: View {
   private func sectionContainer<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 12) { content() }
       .padding(14)
-      .background(
-        RoundedRectangle(cornerRadius: 16)
-          .fill(Color(red: 0.06, green: 0.09, blue: 0.16))
-      )
+      .background(RoundedRectangle(cornerRadius: 16).fill(Color(red: 0.06, green: 0.09, blue: 0.16)))
       .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.gray.opacity(0.25)))
   }
 
   // Jellyfin / Stripe
   private func jellyfinPanelView() -> some View {
     sectionContainer {
-      Text("Jellyfin Access")
-        .font(.system(size: 17, weight: .bold))
-        .foregroundColor(.white)
+      Text("Jellyfin Access").font(.system(size: 17, weight: .bold)).foregroundColor(.white)
 
-      labeledRow("Username") {
-        Text(jfUsername).foregroundColor(.white)
-      }
+      labeledRow("Username") { Text(jfUsername).foregroundColor(.white) }
 
       if subscriptionStatus == "active" {
-        labeledRow("Renews On") {
-          Text(renewalText().isEmpty ? "—" : renewalText())
-            .foregroundColor(.white)
-        }
+        labeledRow("Renews On") { Text(renewalText().isEmpty ? "—" : renewalText()).foregroundColor(.white) }
       }
 
       WrapHStack(spacing: 10) {
         if !jfExists() && canGenerateJF() {
-          primaryButton("Create Account") { await createJellyfin() }
+          primaryButton("Create Account") {
+            jfPassError = ""; jfNewPass = ""; jfConfirmPass = ""
+            jfIsReset = false
+            showJFPassModal = true
+          }
         }
         if jfExists() && canGenerateJF() {
-          primaryButton("Change Password") { // open modal
+          primaryButton("Change Password") {
             jfPassError = ""; jfNewPass = ""; jfConfirmPass = ""
+            jfIsReset = true
             showJFPassModal = true
           }
         }
@@ -295,12 +270,8 @@ struct SettingsView: View {
   // Discord
   private func discordPanelView() -> some View {
     sectionContainer {
-      HStack(spacing: 8) {
-        Image(systemName: "person.crop.circle.badge.checkmark")
-        Text("Discord")
-      }
-      .font(.system(size: 17, weight: .bold))
-      .foregroundColor(.white)
+      HStack(spacing: 8) { Image(systemName: "person.crop.circle.badge.checkmark"); Text("Discord") }
+        .font(.system(size: 17, weight: .bold)).foregroundColor(.white)
 
       Text("Discord Username")
         .font(.system(size: 13, weight: .bold))
@@ -308,10 +279,8 @@ struct SettingsView: View {
 
       HStack(spacing: 8) {
         TextField("@YourDiscordName", text: $updatedDiscord)
-          .textInputAutocapitalization(.never)
-          .disableAutocorrection(true)
-          .padding(.horizontal, 10)
-          .frame(height: 36)
+          .textInputAutocapitalization(.never).disableAutocorrection(true)
+          .padding(.horizontal, 10).frame(height: 36)
           .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
           .foregroundColor(.white)
 
@@ -327,12 +296,9 @@ struct SettingsView: View {
   private func invitePanelView() -> some View {
     sectionContainer {
       HStack {
-        Text("Invite Codes")
-          .font(.system(size: 17, weight: .bold))
-          .foregroundColor(.white)
+        Text("Invite Codes").font(.system(size: 17, weight: .bold)).foregroundColor(.white)
         Spacer()
-        Text("\(invitesAvailable) left this month")
-          .font(.system(size: 12, weight: .bold))
+        Text("\(invitesAvailable) left this month").font(.system(size: 12, weight: .bold))
           .foregroundColor(Color(red: 0.55, green: 0.78, blue: 0.96))
       }
 
@@ -342,42 +308,30 @@ struct SettingsView: View {
           .opacity((invitesAvailable == 0 && !isFirstOfMonth()) ? 0.5 : 1.0)
 
         if !inviteNotice.isEmpty {
-          Text(inviteNotice)
-            .font(.caption)
-            .foregroundColor(.yellow)
+          Text(inviteNotice).font(.caption).foregroundColor(.yellow)
         }
       }
 
-      if !confirmation.isEmpty {
-        Text(confirmation).font(.footnote).foregroundColor(.green)
-      }
+      if !confirmation.isEmpty { Text(confirmation).font(.footnote).foregroundColor(.green) }
 
       if invites.isEmpty {
-        Text("No invites generated yet.")
-          .foregroundColor(.white.opacity(0.75))
-          .font(.subheadline)
+        Text("No invites generated yet.").foregroundColor(.white.opacity(0.75)).font(.subheadline)
       } else {
         VStack(spacing: 8) {
           ForEach(invites) { inv in
             HStack {
               VStack(alignment: .leading, spacing: 4) {
-                Text(inv.code)
-                  .font(.system(.body, design: .monospaced))
-                  .foregroundColor(.white)
-                Text("(Uses: \(inv.uses)/\(inv.max_uses))")
-                  .font(.caption).foregroundColor(.secondary)
+                Text(inv.code).font(.system(.body, design: .monospaced)).foregroundColor(.white)
+                Text("(Uses: \(inv.uses)/\(inv.max_uses))").font(.caption).foregroundColor(.secondary)
               }
               Spacer()
               VStack(alignment: .trailing, spacing: 6) {
-                Text("Expires: \(formatExpiration(inv.expires_at))")
-                  .font(.caption).foregroundColor(.secondary)
+                Text("Expires: \(formatExpiration(inv.expires_at))").font(.caption).foregroundColor(.secondary)
                 Button {
                   UIPasteboard.general.string = inv.code
                   copiedCode = inv.code
                   DispatchQueue.main.asyncAfter(deadline: .now() + 1) { copiedCode = "" }
-                } label: {
-                  HStack(spacing: 6) { Image(systemName: "doc.on.doc"); Text(copiedCode == inv.code ? "Copied!" : "Copy") }
-                }
+                } label: { HStack(spacing: 6) { Image(systemName: "doc.on.doc"); Text(copiedCode == inv.code ? "Copied!" : "Copy") } }
                 .buttonStyle(SecondaryButtonStyle())
               }
             }
@@ -393,13 +347,9 @@ struct SettingsView: View {
   // Account
   private func accountPanelView() -> some View {
     sectionContainer {
-      Text("Account")
-        .font(.system(size: 17, weight: .bold))
-        .foregroundColor(.white)
+      Text("Account").font(.system(size: 17, weight: .bold)).foregroundColor(.white)
 
-      labeledRow("Account Created") {
-        Text(createdAt.isEmpty ? "—" : createdAt).foregroundColor(.white)
-      }
+      labeledRow("Account Created") { Text(createdAt.isEmpty ? "—" : createdAt).foregroundColor(.white) }
 
       // Email
       VStack(alignment: .leading, spacing: 8) {
@@ -413,14 +363,10 @@ struct SettingsView: View {
             .keyboardType(.emailAddress)
             .textInputAutocapitalization(.never)
             .disableAutocorrection(true)
-            .padding(.horizontal, 10)
-            .frame(height: 36)
+            .padding(.horizontal, 10).frame(height: 36)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(red: 0.12, green: 0.14, blue: 0.19)))
             .foregroundColor(.white)
-          primaryButton("Update") {
-            confirmation = "⚠️ Email update requires the web app for now."
-            newEmail = ""
-          }
+          primaryButton("Update") { await updateEmail() }
         }
       }
 
@@ -445,9 +391,7 @@ struct SettingsView: View {
       Divider().background(Color.gray.opacity(0.25))
 
       destructiveButton("Delete Account") { showDeleteModal = true }
-
-      Text("Permanently delete your account. This cannot be undone.")
-        .font(.caption).foregroundColor(.secondary)
+      Text("Permanently delete your account. This cannot be undone.").font(.caption).foregroundColor(.secondary)
     }
   }
 
@@ -459,20 +403,14 @@ struct SettingsView: View {
         ZStack {
           Color.black.opacity(0.6).ignoresSafeArea()
           VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-              Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
-              Text("Delete Account").font(.system(size: 17, weight: .bold))
-            }
-            Text("This will permanently delete your account and sign you out. This action cannot be undone.")
-              .font(.subheadline)
+            HStack(spacing: 8) { Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow); Text("Delete Account").font(.system(size: 17, weight: .bold)) }
+            Text("This will permanently delete your account and sign you out. This action cannot be undone.").font(.subheadline)
 
             if !deleteError.isEmpty { Text(deleteError).font(.footnote).foregroundColor(.red) }
 
             HStack(spacing: 8) {
-              destructiveButton(deletingAccount ? "Deleting…" : "Delete") { await requestAccountDeletion() }
-                .disabled(deletingAccount)
-              Button("Cancel") { if !deletingAccount { showDeleteModal = false } }
-                .buttonStyle(SecondaryButtonStyle())
+              destructiveButton(deletingAccount ? "Deleting…" : "Delete") { await requestAccountDeletion() }.disabled(deletingAccount)
+              Button("Cancel") { if !deletingAccount { showDeleteModal = false } }.buttonStyle(SecondaryButtonStyle())
             }
             .padding(.top, 4)
           }
@@ -491,9 +429,7 @@ struct SettingsView: View {
 
   private func labeledRow(_ label: String, content: () -> Text) -> some View {
     HStack {
-      Text(label)
-        .font(.system(size: 13, weight: .bold))
-        .foregroundColor(Color(red: 0.55, green: 0.78, blue: 0.96))
+      Text(label).font(.system(size: 13, weight: .bold)).foregroundColor(Color(red: 0.55, green: 0.78, blue: 0.96))
       Spacer()
       content()
     }
@@ -544,14 +480,14 @@ struct SettingsView: View {
   }
 
   private func bootstrap() async {
-    await fetchSessionUserID()
+    await fetchSession()
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
   }
 
   private func refreshSettings() async {
-    await fetchSessionUserID()
+    await fetchSession()
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
@@ -571,14 +507,17 @@ struct SettingsView: View {
     } catch { }
   }
 
-  private func fetchSessionUserID() async {
-    // Best-effort: populate userId so password endpoint that requires it can be used
+  private func fetchSession() async {
     do {
       let (data, resp) = try await URLSession.shared.data(from: apiURL("api/get-session"))
       guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return }
-      if let s = try? JSONDecoder().decode(SessionResponse.self, from: data),
-         let id = s.user?.id, !id.isEmpty {
-        userId = id
+      if let s = try? JSONDecoder().decode(SessionResponse.self, from: data), let u = s.user {
+        userId = u.id ?? ""
+        if let created = u.created_at {
+          let d = ISO8601DateFormatter().date(from: created) ?? Date()
+          createdAt = DateFormatter.localizedString(from: d, dateStyle: .short, timeStyle: .short)
+        }
+        discordUsername = u.user_metadata?.discord ?? ""
       }
     } catch { }
   }
@@ -615,72 +554,33 @@ struct SettingsView: View {
     }
   }
 
-  // Create Jellyfin account (missing earlier)
-  @MainActor
-  private func createJellyfin() async {
-    guard !email.isEmpty else { return }
-    jfLoading = true; jfError = ""; jfSuccess = ""
-    struct Payload: Encodable { let username: String }
-    defer { jfLoading = false }
-    do {
-      let (data, resp) = try await postJSON(apiURL("api/check-or-create-jellyfin"),
-                                            body: Payload(username: email))
-      if resp.statusCode == 200 {
-        jfSuccess = msgFrom(data) ?? "Jellyfin account ready."
-        jfUsername = email
-      } else {
-        jfError = msgFrom(data) ?? "Failed to create Jellyfin user."
-      }
-    } catch {
-      jfError = "Error creating Jellyfin user."
-    }
-  }
-
-  // Shown via modal
+  // Unified create/reset password (mirrors web: /api/check-or-create-jellyfin)
   private func submitJellyfinPassword() async {
     guard !email.isEmpty else { jfPassError = "Missing email."; return }
     guard !jfNewPass.isEmpty else { jfPassError = "Please enter a new password."; return }
     guard jfNewPass == jfConfirmPass else { jfPassError = "Passwords do not match."; return }
+
     jfPassError = ""; jfSubmitting = true
     defer { jfSubmitting = false }
 
-    // Try the shape your server’s error message hinted at: { email, new_password }
-    struct BodyA: Encodable { let email: String; let new_password: String }
+    struct Body: Encodable { let email: String; let username: String; let password: String }
+
     do {
-      let (data, resp) = try await postJSON(apiURL("api/reset-jellyfin-password"),
-                                            body: BodyA(email: email, new_password: jfNewPass))
+      let (data, resp) = try await postJSON(
+        apiURL("api/check-or-create-jellyfin"),
+        body: Body(email: email, username: email, password: jfNewPass)
+      )
       if resp.statusCode == 200 {
-        jfSuccess = msgFrom(data) ?? "Jellyfin password updated."
+        jfUsername = email
+        jfSuccess = jfIsReset ? "Password updated!" : "Jellyfin account generated!"
         showJFPassModal = false
-        return
-      } else if let m = msgFrom(data), !m.isEmpty {
-        // If the backend insists on a different field name, try { username, new_password }
-        if m.lowercased().contains("email") == false && m.lowercased().contains("required") {
-          try await tryUsernameFormForJellyfin()
-          return
-        }
-        jfPassError = m
-        return
+        jfNewPass = ""; jfConfirmPass = ""
+        jfIsReset = false
+      } else {
+        jfPassError = msgFrom(data) ?? "Failed to update password."
       }
-    } catch { /* fall through */ }
-
-    // Fallback to { username, new_password }
-    do {
-      try await tryUsernameFormForJellyfin()
     } catch {
-      jfPassError = "Network error."
-    }
-  }
-
-  private func tryUsernameFormForJellyfin() async throws {
-    struct BodyB: Encodable { let username: String; let new_password: String }
-    let (data, resp) = try await postJSON(apiURL("api/reset-jellyfin-password"),
-                                          body: BodyB(username: email, new_password: jfNewPass))
-    if resp.statusCode == 200 {
-      jfSuccess = msgFrom(data) ?? "Jellyfin password updated."
-      showJFPassModal = false
-    } else {
-      jfPassError = msgFrom(data) ?? "Failed to update Jellyfin password."
+      jfPassError = "Error updating password."
     }
   }
 
@@ -745,12 +645,27 @@ struct SettingsView: View {
     }
   }
 
-  /// Change account password using the most permissive order based on your server’s messages.
-  /// Tries:
+  private func updateEmail() async {
+    guard !newEmail.isEmpty else { confirmation = "❌ Enter a new email."; return }
+    struct Body: Encodable { let email: String; let new_email: String }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/update-email"), body: Body(email: email, new_email: newEmail))
+      if resp.statusCode == 200 {
+        confirmation = msgFrom(data) ?? "✅ Email update requested. Check both emails for confirmation."
+        newEmail = ""
+      } else {
+        confirmation = msgFrom(data) ?? "❌ Email update failed."
+      }
+    } catch {
+      confirmation = "❌ Email update failed."
+    }
+  }
+
+  /// Change account password:
   /// 1) { email, current_password, new_password }
-  /// 2) { user_id, new_password }  (server said “user_id and new_password required”)
+  /// 2) { user_id, new_password }
   /// 3) { email, new_password }
-  /// 4) Fallback: password reset email
+  /// 4) fallback: /api/reset-password
   private func changeAccountPassword() async {
     guard !email.isEmpty else { confirmation = "❌ Enter your email first."; return }
     guard !currentPassword.isEmpty, !newPassword.isEmpty else {
@@ -758,7 +673,6 @@ struct SettingsView: View {
       return
     }
 
-    // 1) email + current + new
     struct Body1: Encodable { let email: String; let current_password: String; let new_password: String }
     do {
       let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
@@ -767,15 +681,9 @@ struct SettingsView: View {
         confirmation = msgFrom(data) ?? "✅ Password updated."
         currentPassword = ""; newPassword = ""
         return
-      } else if let m = msgFrom(data), m.lowercased().contains("user_id") {
-        // proceed to 2
-      } else if let m = msgFrom(data), !m.isEmpty {
-        confirmation = "❌ \(m)"
-        // but still try 2 if it looks like a shape mismatch
       }
-    } catch { /* proceed */ }
+    } catch { }
 
-    // 2) user_id + new
     if !userId.isEmpty {
       struct Body2: Encodable { let user_id: String; let new_password: String }
       do {
@@ -786,10 +694,9 @@ struct SettingsView: View {
           currentPassword = ""; newPassword = ""
           return
         }
-      } catch { /* proceed */ }
+      } catch { }
     }
 
-    // 3) email + new (no current)
     struct Body3: Encodable { let email: String; let new_password: String }
     do {
       let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
@@ -801,7 +708,6 @@ struct SettingsView: View {
       }
     } catch { }
 
-    // 4) Reset email
     struct Body4: Encodable { let email: String }
     do {
       let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: Body4(email: email))
@@ -814,6 +720,8 @@ struct SettingsView: View {
       confirmation = "❌ Network error while updating password."
     }
   }
+
+  // ---- Invites (local demo – replace with Supabase-Swift if desired) ----
 
   private func generateInvite() async {
     if invites.count >= inviteLimit && !isFirstOfMonth() {
@@ -830,13 +738,20 @@ struct SettingsView: View {
   }
 
   private func requestAccountDeletion() async {
-    guard !userId.isEmpty else {
-      deleteError = "Missing user id. (Add server endpoint or pass userId.)"
-      return
-    }
+    guard !userId.isEmpty else { deleteError = "Missing user id."; return }
     deletingAccount = true
     defer { deletingAccount = false }
-    deleteError = "Implement delete-user endpoint for iOS."
+    struct Body: Encodable { let id: String }
+    do {
+      let (data, resp) = try await postJSON(apiURL("api/delete-user"), body: Body(id: userId))
+      if resp.statusCode == 200 {
+        NotificationCenter.default.post(name: .init("S2VidsDidLogout"), object: nil)
+      } else {
+        deleteError = msgFrom(data) ?? "Failed to delete account."
+      }
+    } catch {
+      deleteError = "Unexpected error deleting account."
+    }
   }
 }
 
