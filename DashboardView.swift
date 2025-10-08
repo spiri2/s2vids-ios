@@ -6,6 +6,69 @@
 import SwiftUI
 import AVKit
 
+// MARK: - Small helpers shared with MoviesView
+
+/// Base used across the app (keeps this file self-contained).
+private func apiBaseURL() -> URL {
+  // If your AppConfig is present, prefer it. Otherwise fall back to Info.plist or prod host.
+  if let base = (AppConfig.apiBase as URL?) { return base }
+  if let s = Bundle.main.object(forInfoDictionaryKey: "S2_API_BASE") as? String,
+     let u = URL(string: s) { return u }
+  return URL(string: "https://s2vids.org/")!
+}
+
+/// Resolve absolute/relative stream paths into a playable URL.
+private func resolveStreamURL(_ raw: String) -> URL? {
+  if let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
+     scheme == "https" || scheme == "http" || scheme == "file" {
+    return u
+  }
+  if raw.hasPrefix("/") {
+    return URL(string: raw, relativeTo: apiBaseURL())?.absoluteURL
+  }
+  return apiBaseURL().appendingPathComponent(raw).absoluteURL
+}
+
+// MARK: - Welcome (Loading) Screen
+
+private struct WelcomeScreen: View {
+  let show: Bool
+
+  var body: some View {
+    Group {
+      if show {
+        ZStack {
+          Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
+
+          VStack(spacing: 8) {
+            // Gradient “s2vids” title
+            LinearGradient(
+              colors: [Color(red: 0.67, green: 0.86, blue: 1.0), Color(red: 0.70, green: 0.73, blue: 1.0)],
+              startPoint: .leading, endPoint: .trailing
+            )
+            .mask(
+              Text("s2vids")
+                .font(.system(size: 44, weight: .black, design: .default))
+                .tracking(0.5)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
+
+            Text("Your passport to premium cinema.")
+              .font(.system(size: 14, weight: .semibold))
+              .foregroundColor(Color(red: 0.73, green: 0.78, blue: 0.98).opacity(0.9))
+              .padding(.top, 2)
+              .transition(.opacity)
+          }
+          .padding()
+          .transition(.scale(scale: 0.96).combined(with: .opacity))
+        }
+        .transition(.opacity.combined(with: .scale))
+      }
+    }
+    .animation(.easeInOut(duration: 0.45), value: show)
+  }
+}
+
 // MARK: - Dashboard
 
 struct DashboardView: View {
@@ -38,10 +101,25 @@ struct DashboardView: View {
   @State private var showTvShows = false
   @State private var showAdmin = false                 // ✅
 
+  // Local media player (ported from MoviesView)
+  @State private var playerOpen = false
+  @State private var player: AVPlayer? = nil
+  @State private var itemStatusObserver: NSKeyValueObservation? = nil
+  @State private var playerFailObserver: NSObjectProtocol? = nil
+  @State private var playerFailed = false
+  @State private var playerStatusMsg = ""
+  @State private var httpWarning = false
+
+  private var isPlayerError: Bool { playerFailed && !playerStatusMsg.isEmpty }
+  private var showHttpWarning: Bool { httpWarning && !isPlayerError }
+
   // Hardcoded admin email override + prop
   private var effectiveIsAdmin: Bool {
     isAdmin || email.lowercased() == "mspiri2@outlook.com"
   }
+
+  // NEW: Welcome / loading overlay flag
+  @State private var showWelcome = true
 
   var body: some View {
     ZStack {
@@ -95,11 +173,22 @@ struct DashboardView: View {
       .refreshable {
         await refreshDashboard()
       }
+
+      // ⬆️ Overlay loading screen (s2vids)
+      WelcomeScreen(show: showWelcome)
+        .zIndex(120) // above everything
     }
     .preferredColorScheme(.dark)
     // Run initial load via the same async path used by refresh
     .task {
       await initialBootstrap()
+    }
+    .onAppear {
+      // Show welcome immediately, auto-dismiss shortly after
+      showWelcome = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+        withAnimation(.easeInOut(duration: 0.45)) { showWelcome = false }
+      }
     }
 
     // Getting Started
@@ -118,21 +207,37 @@ struct DashboardView: View {
       .modifier(DetentsCompatLarge())
     }
 
-    // Player (only if hasAccess)
+    // Player — upgraded (error banner + HTTP warning + cleanup on dismiss)
     .fullScreenCover(
-      isPresented: Binding(
-        get: { vm.playerOpen && hasAccess },
-        set: { vm.playerOpen = $0 }
-      )
+      isPresented: Binding(get: { playerOpen && hasAccess },
+                           set: { playerOpen = $0 }),
+      onDismiss: { stopPlayerObservers() }
     ) {
-      VideoPlayer(player: vm.player)
-        .ignoresSafeArea()
-        .overlay(alignment: .topTrailing) {
-          Button("Close") { vm.closePlayer() }
+      ZStack(alignment: .topTrailing) {
+        if let p = player {
+          VideoPlayer(player: p).ignoresSafeArea()
+        } else {
+          Color.black.ignoresSafeArea()
+        }
+
+        VStack(alignment: .trailing, spacing: 8) {
+          if isPlayerError {
+            Text(playerStatusMsg)
+              .font(.footnote).bold()
+              .padding(.horizontal, 10).padding(.vertical, 6)
+              .background(Color.red, in: Capsule())
+          } else if showHttpWarning {
+            Text("HTTP stream — configure ATS or use HTTPS")
+              .font(.footnote).bold()
+              .padding(.horizontal, 10).padding(.vertical, 6)
+              .background(Color.orange, in: Capsule())
+          }
+          Button("Close") { closePlayer() }
             .padding(12)
             .background(.ultraThinMaterial, in: Capsule())
-            .padding()
         }
+        .padding()
+      }
     }
 
     // Info sheet (SwiftUI-native)
@@ -232,7 +337,7 @@ struct DashboardView: View {
           resolvedTrialing = (status == "trialing") || trialEnd > 0
           accessResolved = true
           if !hasAccess {
-            vm.playerOpen = false
+            playerOpen = false
             vm.showGettingStarted = true
           }
         }
@@ -407,7 +512,7 @@ struct DashboardView: View {
 
   private func playOrShowOnboarding(title: String, year: Int?) {
     guard hasAccess else {
-      vm.playerOpen = false
+      playerOpen = false
       vm.showGettingStarted = true
       return
     }
@@ -418,6 +523,7 @@ struct DashboardView: View {
     infoPayload = .init(title: title, year: year, posterURL: posterURL(for: title, year: year))
   }
 
+  /// Finds the stream by title and opens the upgraded player.
   private func openByTitle(_ title: String, year: Int?) {
     guard hasAccess else {
       vm.showGettingStarted = true
@@ -439,14 +545,93 @@ struct DashboardView: View {
           return t.lowercased().contains(simp)
         })
 
-        guard let m = match,
-              let stream = m["streamUrl"] as? String,
-              let streamURL = URL(string: stream)
-        else { return }
-
-        vm.openPlayer(title: title, streamURL: streamURL)
+        guard let m = match, let stream = m["streamUrl"] as? String else { return }
+        openPlayer(stream: stream)
       } catch { }
     }
+  }
+
+  // MARK: Player logic (ported from MoviesView)
+
+  private func openPlayer(stream: String, resumeAt: Double = 0) {
+    playerFailed = false
+    playerStatusMsg = ""
+    httpWarning = false
+    itemStatusObserver?.invalidate()
+    itemStatusObserver = nil
+
+    guard let url = resolveStreamURL(stream) else {
+      playerFailed = true
+      playerStatusMsg = "Bad or relative stream URL."
+      playerOpen = true
+      return
+    }
+
+    if url.scheme?.lowercased() == "http" { httpWarning = true }
+
+    let asset = AVURLAsset(url: url, options: nil)
+    let item = AVPlayerItem(asset: asset)
+    let p = AVPlayer(playerItem: item)
+    player = p
+    playerOpen = true
+
+    #if os(iOS)
+    try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+    try? AVAudioSession.sharedInstance().setActive(true)
+    #endif
+
+    itemStatusObserver = item.observe(\.status, options: [.initial, .new]) { itm, _ in
+      DispatchQueue.main.async {
+        switch itm.status {
+        case .readyToPlay:
+          if resumeAt > 1 {
+            let t = CMTimeMakeWithSeconds(resumeAt, preferredTimescale: 600)
+            p.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero) { _ in p.play() }
+          } else {
+            p.play()
+          }
+        case .failed:
+          self.playerFailed = true
+          self.playerStatusMsg = itm.error?.localizedDescription ?? "Failed to load stream."
+          if let el = itm.errorLog() { print("📼 errorLog:", el.events) }
+          if let al = itm.accessLog() { print("📼 accessLog:", al.events) }
+        case .unknown:
+          break
+        @unknown default:
+          break
+        }
+      }
+    }
+
+    playerFailObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemFailedToPlayToEndTime,
+      object: item,
+      queue: .main
+    ) { n in
+      self.playerFailed = true
+      let err = (n.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError)
+      self.playerStatusMsg = err?.localizedDescription ?? "Failed to play to end."
+      print("❌ FailedToPlayToEnd:", err ?? "nil")
+    }
+  }
+
+  private func closePlayer() {
+    stopPlayerObservers()
+    player?.pause()
+    player = nil
+    playerOpen = false
+  }
+
+  private func stopPlayerObservers() {
+    itemStatusObserver?.invalidate()
+    itemStatusObserver = nil
+    if let token = playerFailObserver {
+      NotificationCenter.default.removeObserver(token)
+      playerFailObserver = nil
+    }
+    #if os(iOS)
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    #endif
   }
 }
 
