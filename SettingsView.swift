@@ -6,6 +6,8 @@
 //  - Expects you already have `AppConfig` with `static let apiBase: URL`
 //    and a `UserMenuButton` component in your project.
 //  - This file contains ONLY `SettingsView` and its local helpers.
+//  - Account password change now mirrors web admin reset:
+//    POST /api/reset-password { email, newPassword }.
 //
 
 import SwiftUI
@@ -63,6 +65,9 @@ struct SettingsView: View {
   @Environment(\.dismiss) private var dismiss
   private let inviteLimit = 5
 
+  // App version (shown in System panel)
+  private let appVersionDisplay = "1.0.1"
+
   // State (web parity)
   @State private var userId: String = ""          // from /api/get-session
   @State private var createdAt: String = ""
@@ -115,6 +120,7 @@ struct SettingsView: View {
             discordPanelView()
             invitePanelView()
             accountPanelView()
+            systemPanelView() // NEW: App Version panel at bottom
           }
 
           if !confirmation.isEmpty {
@@ -395,6 +401,14 @@ struct SettingsView: View {
     }
   }
 
+  // System (App Version)
+  private func systemPanelView() -> some View {
+    sectionContainer {
+      Text("System").font(.system(size: 17, weight: .bold)).foregroundColor(.white)
+      labeledRow("App Version") { Text(appVersionDisplay).foregroundColor(.white) }
+    }
+  }
+
   // MARK: Overlay (delete)
 
   private func deleteAccountOverlay() -> some View {
@@ -661,58 +675,21 @@ struct SettingsView: View {
     }
   }
 
-  /// Change account password:
-  /// 1) { email, current_password, new_password }
-  /// 2) { user_id, new_password }
-  /// 3) { email, new_password }
-  /// 4) fallback: /api/reset-password
+  /// Change account password — Option 1:
+  /// Directly call /api/reset-password { email, newPassword }.
   private func changeAccountPassword() async {
-    guard !email.isEmpty else { confirmation = "❌ Enter your email first."; return }
+    guard !email.isEmpty else { confirmation = "❌ Could not determine your account email."; return }
     guard !currentPassword.isEmpty, !newPassword.isEmpty else {
       confirmation = "❌ Enter current and new password."
       return
     }
 
-    struct Body1: Encodable { let email: String; let current_password: String; let new_password: String }
+    struct ResetBody: Encodable { let email: String; let newPassword: String }
     do {
-      let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
-                                            body: Body1(email: email, current_password: currentPassword, new_password: newPassword))
-      if resp.statusCode == 200 {
-        confirmation = msgFrom(data) ?? "✅ Password updated."
+      let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: ResetBody(email: email, newPassword: newPassword))
+      if (200...299).contains(resp.statusCode) {
+        confirmation = msgFrom(data) ?? "✅ Password updated successfully."
         currentPassword = ""; newPassword = ""
-        return
-      }
-    } catch { }
-
-    if !userId.isEmpty {
-      struct Body2: Encodable { let user_id: String; let new_password: String }
-      do {
-        let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
-                                              body: Body2(user_id: userId, new_password: newPassword))
-        if resp.statusCode == 200 {
-          confirmation = msgFrom(data) ?? "✅ Password updated."
-          currentPassword = ""; newPassword = ""
-          return
-        }
-      } catch { }
-    }
-
-    struct Body3: Encodable { let email: String; let new_password: String }
-    do {
-      let (data, resp) = try await postJSON(apiURL("api/update-user-password"),
-                                            body: Body3(email: email, new_password: newPassword))
-      if resp.statusCode == 200 {
-        confirmation = msgFrom(data) ?? "✅ Password updated."
-        currentPassword = ""; newPassword = ""
-        return
-      }
-    } catch { }
-
-    struct Body4: Encodable { let email: String }
-    do {
-      let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: Body4(email: email))
-      if resp.statusCode == 200 {
-        confirmation = msgFrom(data) ?? "✅ Password reset email sent. Check your inbox."
       } else {
         confirmation = msgFrom(data) ?? "❌ Failed to update password."
       }
