@@ -5,9 +5,10 @@
 //  NOTE:
 //  - Expects you already have `AppConfig` with `static let apiBase: URL`
 //    and a `UserMenuButton` component in your project.
-//  - This file contains ONLY `SettingsView` and its local helpers.
-//  - Account password change now mirrors web admin reset:
-//    POST /api/reset-password { email, newPassword }.
+//  - Discord update now sends userId to the API to avoid DB NOT NULL issues.
+//  - Confirmation banner is success/error aware.
+//  - App version shows 1.0.1.
+//  - Password change uses Option 1: POST /api/reset-password { email, newPassword }.
 //
 
 import SwiftUI
@@ -37,10 +38,19 @@ private struct StripeStatusResponse: Decodable {
   let trial_end: Int?
 }
 
+// FIX: Match /api/get-session payload: { session: { user: {…} } }
 private struct SessionResponse: Decodable {
-  struct User: Decodable { let id: String?; let email: String?; let created_at: String?; let user_metadata: Meta? }
+  struct Session: Decodable {
+    struct User: Decodable {
+      let id: String?
+      let email: String?
+      let created_at: String?
+      let user_metadata: Meta?
+    }
+    let user: User?
+  }
   struct Meta: Decodable { let discord: String? }
-  let user: User?
+  let session: Session?
 }
 
 private struct GenericOK: Decodable { let ok: Bool?; let message: String?; let status: String? }
@@ -77,7 +87,10 @@ struct SettingsView: View {
   @State private var discordUsername: String = ""
   @State private var updatedDiscord: String = ""
 
+  enum NoticeKind { case success, error, none }
   @State private var confirmation: String = ""
+  @State private var confirmationKind: NoticeKind = .none
+
   @State private var invites: [Invite] = []
   @State private var copiedCode: String = ""
   @State private var inviteNotice: String = ""
@@ -120,13 +133,15 @@ struct SettingsView: View {
             discordPanelView()
             invitePanelView()
             accountPanelView()
-            systemPanelView() // NEW: App Version panel at bottom
+            systemPanelView() // App Version panel
           }
 
           if !confirmation.isEmpty {
             Text(confirmation)
               .font(.subheadline)
-              .foregroundColor(Color(red: 0.67, green: 0.93, blue: 0.80))
+              .foregroundColor(confirmationKind == .error
+                               ? Color(red: 1.0, green: 0.65, blue: 0.65)    // red-ish
+                               : Color(red: 0.67, green: 0.93, blue: 0.80))  // green-ish
               .frame(maxWidth: .infinity, alignment: .center)
               .padding(.top, 6)
           }
@@ -273,7 +288,7 @@ struct SettingsView: View {
     }
   }
 
-  // Discord
+  // Discord — now sends userId and shows proper error color
   private func discordPanelView() -> some View {
     sectionContainer {
       HStack(spacing: 8) { Image(systemName: "person.crop.circle.badge.checkmark"); Text("Discord") }
@@ -318,7 +333,11 @@ struct SettingsView: View {
         }
       }
 
-      if !confirmation.isEmpty { Text(confirmation).font(.footnote).foregroundColor(.green) }
+      if !confirmation.isEmpty && confirmationKind != .none {
+        Text(confirmation)
+          .font(.footnote)
+          .foregroundColor(confirmationKind == .error ? .red : .green)
+      }
 
       if invites.isEmpty {
         Text("No invites generated yet.").foregroundColor(.white.opacity(0.75)).font(.subheadline)
@@ -498,6 +517,8 @@ struct SettingsView: View {
     await fetchStripeStatus()
     await checkJellyfin()
     invitesAvailable = inviteLimit
+    // Prefill the input with the linked value for convenience
+    if !discordUsername.isEmpty { updatedDiscord = discordUsername }
   }
 
   private func refreshSettings() async {
@@ -521,19 +542,35 @@ struct SettingsView: View {
     } catch { }
   }
 
+  // FIX: Read user from response.session?.user; clear state on non-200.
   private func fetchSession() async {
     do {
       let (data, resp) = try await URLSession.shared.data(from: apiURL("api/get-session"))
-      guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return }
-      if let s = try? JSONDecoder().decode(SessionResponse.self, from: data), let u = s.user {
+      guard let http = resp as? HTTPURLResponse else { return }
+      guard http.statusCode == 200 else {
+        userId = ""
+        createdAt = ""
+        discordUsername = ""
+        return
+      }
+      if let s = try? JSONDecoder().decode(SessionResponse.self, from: data),
+         let u = s.session?.user {
         userId = u.id ?? ""
         if let created = u.created_at {
           let d = ISO8601DateFormatter().date(from: created) ?? Date()
           createdAt = DateFormatter.localizedString(from: d, dateStyle: .short, timeStyle: .short)
         }
         discordUsername = u.user_metadata?.discord ?? ""
+      } else {
+        userId = ""
+        createdAt = ""
+        discordUsername = ""
       }
-    } catch { }
+    } catch {
+      userId = ""
+      createdAt = ""
+      discordUsername = ""
+    }
   }
 
   private func postJSON<T: Encodable>(_ url: URL, body: T) async throws -> (Data, HTTPURLResponse) {
@@ -548,6 +585,8 @@ struct SettingsView: View {
   private func msgFrom(_ data: Data) -> String? {
     if let g = try? JSONDecoder().decode(GenericOK.self, from: data), let m = g.message, !m.isEmpty { return m }
     if let e = try? JSONDecoder().decode(GenericErr.self, from: data), let m = e.error, !m.isEmpty { return m }
+    // Fallback: sometimes APIs return plain text
+    if let s = String(data: data, encoding: .utf8), !s.isEmpty { return s }
     return nil
   }
 
@@ -642,45 +681,58 @@ struct SettingsView: View {
 
   // ---- Discord & Account ----
 
+  /// Update Discord username. Sends **userId** and discord to your API.
+  /// This avoids DB NOT NULL issues on `users.id`.
   private func updateDiscord() async {
-    guard !email.isEmpty else { return }
-    struct Body: Encodable { let email: String; let discord: String }
+    guard !email.isEmpty else { confirmation = "❌ Missing account email."; confirmationKind = .error; return }
+    guard !userId.isEmpty else { confirmation = "❌ Missing session (user id)."; confirmationKind = .error; return }
+    let trimmed = updatedDiscord.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { confirmation = "❌ Enter a Discord username."; confirmationKind = .error; return }
+
+    struct Body: Encodable { let id: String; let discord: String }
     do {
-      let (data, resp) = try await postJSON(apiURL("api/save-user"), body: Body(email: email, discord: updatedDiscord))
-      if resp.statusCode == 200 {
-        discordUsername = updatedDiscord
+      let (data, resp) = try await postJSON(apiURL("api/save-user"), body: Body(id: userId, discord: trimmed))
+      if (200...299).contains(resp.statusCode) {
+        discordUsername = trimmed
         updatedDiscord = ""
         confirmation = msgFrom(data) ?? "✅ Discord username updated."
+        confirmationKind = .success
       } else {
         confirmation = msgFrom(data) ?? "❌ Failed to update Discord username."
+        confirmationKind = .error
       }
     } catch {
       confirmation = "❌ Error updating Discord username."
+      confirmationKind = .error
     }
   }
 
   private func updateEmail() async {
-    guard !newEmail.isEmpty else { confirmation = "❌ Enter a new email."; return }
+    guard !newEmail.isEmpty else { confirmation = "❌ Enter a new email."; confirmationKind = .error; return }
     struct Body: Encodable { let email: String; let new_email: String }
     do {
       let (data, resp) = try await postJSON(apiURL("api/update-email"), body: Body(email: email, new_email: newEmail))
-      if resp.statusCode == 200 {
+      if (200...299).contains(resp.statusCode) {
         confirmation = msgFrom(data) ?? "✅ Email update requested. Check both emails for confirmation."
+        confirmationKind = .success
         newEmail = ""
       } else {
         confirmation = msgFrom(data) ?? "❌ Email update failed."
+        confirmationKind = .error
       }
     } catch {
       confirmation = "❌ Email update failed."
+      confirmationKind = .error
     }
   }
 
   /// Change account password — Option 1:
   /// Directly call /api/reset-password { email, newPassword }.
   private func changeAccountPassword() async {
-    guard !email.isEmpty else { confirmation = "❌ Could not determine your account email."; return }
+    guard !email.isEmpty else { confirmation = "❌ Could not determine your account email."; confirmationKind = .error; return }
     guard !currentPassword.isEmpty, !newPassword.isEmpty else {
       confirmation = "❌ Enter current and new password."
+      confirmationKind = .error
       return
     }
 
@@ -689,12 +741,15 @@ struct SettingsView: View {
       let (data, resp) = try await postJSON(apiURL("api/reset-password"), body: ResetBody(email: email, newPassword: newPassword))
       if (200...299).contains(resp.statusCode) {
         confirmation = msgFrom(data) ?? "✅ Password updated successfully."
+        confirmationKind = .success
         currentPassword = ""; newPassword = ""
       } else {
         confirmation = msgFrom(data) ?? "❌ Failed to update password."
+        confirmationKind = .error
       }
     } catch {
       confirmation = "❌ Network error while updating password."
+      confirmationKind = .error
     }
   }
 
@@ -712,6 +767,7 @@ struct SettingsView: View {
     invites.insert(new, at: 0)
     invitesAvailable = max(0, invitesAvailable - 1)
     confirmation = "✅ Invite created: \(code)"
+    confirmationKind = .success
   }
 
   private func requestAccountDeletion() async {
