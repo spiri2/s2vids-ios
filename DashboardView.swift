@@ -201,7 +201,7 @@ struct DashboardView: View {
 
     // Announcements
     .sheet(isPresented: $vm.showAnnouncements) {
-      AnnouncementsSheet(isAdmin: effectiveIsAdmin) {
+      AnnouncementsSheet(isAdmin: effectiveIsAdmin, currentUserEmail: email) {
         vm.showAnnouncements = false
       }
       .modifier(DetentsCompatLarge())
@@ -764,27 +764,46 @@ struct GettingStartedSheet: View {
 
 struct AnnouncementsSheet: View {
   var isAdmin: Bool
+  var currentUserEmail: String
   var onClose: () -> Void
+
   @State private var items: [[String:Any]] = []
   @State private var loading = true
+  @State private var errorText: String?
+  @State private var showingNew = false
 
   var body: some View {
     NavigationView {
       Group {
         if loading {
           ProgressView("Loading…")
+        } else if let err = errorText {
+          VStack(spacing: 10) {
+            Text("Failed to load announcements.")
+            Text(err).font(.caption).foregroundColor(.secondary)
+            Button("Retry") { Task { await load() } }
+              .buttonStyle(.bordered)
+          }
         } else if items.isEmpty {
-          Text("No announcements yet.").foregroundColor(.secondary)
+          VStack(spacing: 12) {
+            Text("No announcements yet.").foregroundColor(.secondary)
+            if isAdmin {
+              Button {
+                showingNew = true
+              } label: {
+                Label("New Announcement", systemImage: "plus.circle.fill")
+              }
+              .buttonStyle(.borderedProminent)
+            }
+          }
         } else {
           List {
-            ForEach(0..<items.count, id: \.self) { i in
-              let a = items[i]
-              VStack(alignment: .leading, spacing: 6) {
-                Text((a["message"] as? String) ?? "—")
-                Text((a["author"] as? String) ?? "Admin")
-                  .font(.caption)
-                  .foregroundColor(.secondary)
-              }
+            ForEach(Array(items.enumerated()), id: \.offset) { _, a in
+              AnnouncementRow(
+                announcement: a,
+                isAdmin: isAdmin,
+                onDelete: { id in Task { await deleteAnnouncement(id: id) } }
+              )
               .listRowBackground(Color(red:0.08, green:0.10, blue:0.17))
             }
           }
@@ -795,24 +814,207 @@ struct AnnouncementsSheet: View {
       .navigationTitle("Announcements")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .navigationBarTrailing) {
+        ToolbarItemGroup(placement: .navigationBarTrailing) {
+          if isAdmin {
+            Button {
+              showingNew = true
+            } label: {
+              Label("New", systemImage: "plus.circle")
+            }
+          }
           Button("Close", action: onClose)
         }
       }
       .task { await load() }
+      .sheet(isPresented: $showingNew) {
+        NewAnnouncementForm(
+          defaultAuthor: currentUserEmail.isEmpty ? "Admin" : currentUserEmail,
+          onCancel: { showingNew = false },
+          onCreated: { created in
+            // Prepend new item
+            items.insert(created, at: 0)
+            showingNew = false
+          }
+        )
+        .modifier(DetentsCompatMediumLarge())
+      }
     }
   }
 
+  // MARK: Networking
+
   func load() async {
     loading = true
+    errorText = nil
     defer { loading = false }
-    let url = AppConfig.apiBase.appendingPathComponent("api/announcement")
+    let url = apiBaseURL().appendingPathComponent("api/announcement")
     do {
       let (data, resp) = try await URLSession.shared.data(from: url)
-      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+        errorText = "Server returned an error."
+        items = []
+        return
+      }
       let arr = try JSONSerialization.jsonObject(with: data) as? [[String:Any]] ?? []
       items = arr
-    } catch { items = [] }
+    } catch {
+      items = []
+      errorText = "Network error."
+    }
+  }
+
+  func deleteAnnouncement(id: String) async {
+    guard isAdmin else { return }
+    var req = URLRequest(url: apiBaseURL().appendingPathComponent("api/announcement"))
+    req.httpMethod = "DELETE"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let body = ["id": id]
+    req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+    do {
+      let (_, resp) = try await URLSession.shared.data(for: req)
+      guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        return
+      }
+      // Remove locally
+      items.removeAll { ($0["id"] as? String) == id }
+    } catch {
+      // ignore for now; could show an alert
+    }
+  }
+
+  // MARK: Row
+
+  struct AnnouncementRow: View {
+    let announcement: [String:Any]
+    let isAdmin: Bool
+    let onDelete: (_ id: String) -> Void
+
+    private var id: String { (announcement["id"] as? String) ?? "" }
+    private var message: String { (announcement["message"] as? String) ?? "—" }
+    private var author: String { (announcement["author"] as? String) ?? "Admin" }
+    private var createdAtText: String {
+      if let s = announcement["created_at"] as? String {
+        // Light best-effort date formatting
+        if let d = ISO8601DateFormatter().date(from: s) {
+          let f = DateFormatter()
+          f.dateStyle = .medium
+          f.timeStyle = .short
+          return f.string(from: d)
+        }
+        return s
+      }
+      return ""
+    }
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 6) {
+        Text(message)
+          .foregroundColor(.white)
+          .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 8) {
+          Text(author).font(.caption).foregroundColor(.secondary)
+          if !createdAtText.isEmpty {
+            Text("·").font(.caption).foregroundColor(.secondary)
+            Text(createdAtText).font(.caption).foregroundColor(.secondary)
+          }
+          Spacer()
+          if isAdmin && !id.isEmpty {
+            Button {
+              onDelete(id)
+            } label: {
+              Label("Delete", systemImage: "trash")
+                .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .tint(.red)
+            .help("Delete announcement")
+          }
+        }
+      }
+      .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        if isAdmin && !id.isEmpty {
+          Button(role: .destructive) {
+            onDelete(id)
+          } label: {
+            Label("Delete", systemImage: "trash")
+          }
+        }
+      }
+    }
+  }
+}
+
+// MARK: - New Announcement Form
+
+struct NewAnnouncementForm: View {
+  var defaultAuthor: String = "Admin"
+  var onCancel: () -> Void
+  var onCreated: (_ created: [String:Any]) -> Void
+
+  @State private var message: String = ""
+  @State private var author: String = ""
+  @State private var saving = false
+  @State private var errorText: String?
+
+  var body: some View {
+    NavigationView {
+      Form {
+        Section(header: Text("Message")) {
+          TextEditor(text: $message)
+            .frame(minHeight: 120)
+        }
+        Section(header: Text("Author")) {
+          TextField("Author", text: $author)
+        }
+        if let err = errorText {
+          Section {
+            Text(err).foregroundColor(.red)
+          }
+        }
+      }
+      .navigationTitle("New Announcement")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .navigationBarLeading) {
+          Button("Cancel", action: onCancel)
+        }
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button(saving ? "Creating…" : "Create") {
+            Task { await create() }
+          }
+          .disabled(saving || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      }
+      .onAppear { author = defaultAuthor }
+    }
+  }
+
+  private func create() async {
+    errorText = nil
+    saving = true
+    defer { saving = false }
+
+    var req = URLRequest(url: apiBaseURL().appendingPathComponent("api/announcement"))
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let body: [String:Any] = [
+      "message": message.trimmingCharacters(in: .whitespacesAndNewlines),
+      "author": author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Admin" : author
+    ]
+    req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+    do {
+      let (data, resp) = try await URLSession.shared.data(for: req)
+      guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        errorText = "Server error. Please try again."
+        return
+      }
+      let created = (try? JSONSerialization.jsonObject(with: data)) as? [String:Any] ?? body
+      onCreated(created)
+    } catch {
+      errorText = "Network error. Please try again."
+    }
   }
 }
 
