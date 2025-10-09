@@ -744,9 +744,6 @@ struct GettingStartedSheet: View {
         Group {
           Text("1. Select Subscribe.")
           Text("2. After subscribing, return here and refresh the page.")
-          Text("3. Create your Jellyfin account and set a password.")
-          Text("4. Open the menu (top right) and Launch Jellyfin.")
-          Text("5. Sign in with your email and password.")
         }
         .foregroundColor(.secondary)
 
