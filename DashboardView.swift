@@ -5,6 +5,8 @@
 
 import SwiftUI
 import AVKit
+import Security           // 🔑 Keychain
+import Supabase           // 🟣 Supabase
 
 // MARK: - Small helpers shared with MoviesView
 
@@ -27,6 +29,30 @@ private func resolveStreamURL(_ raw: String) -> URL? {
     return URL(string: raw, relativeTo: apiBaseURL())?.absoluteURL
   }
   return apiBaseURL().appendingPathComponent(raw).absoluteURL
+}
+
+// MARK: - 🔑 Keychain helper (tokens)
+
+private enum KeychainAuth {
+  static let service = "s2vids.auth"
+  static let acctAccess = "sb.access"
+  static let acctRefresh = "sb.refresh"
+
+  @discardableResult
+  static func delete(key: String) -> Bool {
+    let q: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: key
+    ]
+    let status = SecItemDelete(q as CFDictionary)
+    return status == errSecSuccess || status == errSecItemNotFound
+  }
+
+  static func clearTokens() {
+    _ = delete(key: acctAccess)
+    _ = delete(key: acctRefresh)
+  }
 }
 
 // MARK: - Welcome (Loading) Screen
@@ -88,6 +114,9 @@ struct DashboardView: View {
   @State private var resolvedStatus: String = ""
   @State private var resolvedTrialing: Bool = false
   @State private var accessResolved = false
+
+  // Dismiss the fullScreenCover upon logout
+  @Environment(\.dismiss) private var dismiss
 
   // Info sheet state (avoid UIApplication.present)
   struct InfoPayload: Identifiable {
@@ -405,7 +434,9 @@ struct DashboardView: View {
         email: email,
         isAdmin: effectiveIsAdmin,
         onRequireAccess: { vm.showGettingStarted = true },
-        onLogout: { /* hook up to your logout */ },
+        onLogout: {
+          Task { await performLogout() }   // 🔐 hook up real logout
+        },
         onOpenSettings: { showSettings = true },   // open Settings
         onOpenMovies: { showMovies = true },       // open Movies
         onOpenDiscover: { showDiscover = true },   // open Discover
@@ -415,6 +446,29 @@ struct DashboardView: View {
     }
     .foregroundColor(.white)
     .zIndex(10_000) // keep menu above posters
+  }
+
+  // MARK: Real logout
+
+  /// Signs out of Supabase, clears Keychain tokens and dismisses back to LoginView.
+  private func performLogout() async {
+    // 1) Supabase sign out
+    do {
+      try await SupabaseManager.shared.client.auth.signOut()
+    } catch {
+      // Even if this fails, still clear local state so user leaves the session.
+      print("⚠️ signOut error:", error.localizedDescription)
+    }
+
+    // 2) Clear any stored tokens (Option B: Keychain)
+    KeychainAuth.clearTokens()
+
+    // 3) Clear any local flags you may have used for persistence
+    UserDefaults.standard.removeObject(forKey: "rememberUser")
+    UserDefaults.standard.removeObject(forKey: "rememberEmail")
+
+    // 4) Dismiss this fullScreenCover (back to LoginView)
+    await MainActor.run { dismiss() }
   }
 
   // MARK: Carousels / Poster
@@ -1058,8 +1112,6 @@ struct UserMenuButton: View {
   @State private var loading = false
   @State private var errorText: String?
 
-  @Environment(\.openURL) private var openURL
-
   var body: some View {
     Button {
       toggleOpen()
@@ -1104,8 +1156,6 @@ struct UserMenuButton: View {
               onOpenTvShows()
             }
             Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
-
-            // (Removed: Launch Jellyfin, Request Media, TV Show Calendar)
 
             Row(icon: "gear", title: "Settings") {
               open = false
@@ -1165,49 +1215,6 @@ struct UserMenuButton: View {
   private func toggleOpen() {
     withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
       open.toggle()
-    }
-    if open { Task { await checkStripeAccess() } }
-  }
-
-  private func goOrWarn(_ go: () -> Void) {
-    if hasAccess || isAdmin || email.lowercased() == "mspiri2@outlook.com" {
-      go()
-    } else {
-      onRequireAccess()
-    }
-  }
-
-  private func statusAllowsAccess(_ status: String) -> Bool {
-    let s = status.lowercased()
-    return s == "active" || s == "trialing"
-  }
-
-  private func checkStripeAccess() async {
-    guard !email.isEmpty else { hasAccess = false; return }
-    loading = true
-    errorText = nil
-    defer { loading = false }
-
-    do {
-      var comps = URLComponents(
-        url: AppConfig.apiBase.appendingPathComponent("api/get-stripe-status"),
-        resolvingAgainstBaseURL: false
-      )!
-      comps.queryItems = [ URLQueryItem(name: "email", value: email) ]
-
-      let (data, resp) = try await URLSession.shared.data(from: comps.url!)
-      guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-        hasAccess = false
-        errorText = "Unable to check subscription."
-        return
-      }
-      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-      let status = (obj?["status"] as? String) ?? ""
-      let activeFlag = (obj?["active"] as? Bool) ?? false
-      hasAccess = activeFlag || statusAllowsAccess(status)
-    } catch {
-      hasAccess = false
-      errorText = "Network error."
     }
   }
 }
