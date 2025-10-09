@@ -5,6 +5,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import Supabase
 
 // MARK: - Models
 
@@ -48,6 +49,21 @@ private struct MasterInvitePayload: Decodable {
   let error: String?
 }
 
+// /api/get-session-mobile -> { session: { user: { id, email, created_at, user_metadata } } }
+private struct SessionEnvelope: Decodable {
+  struct Session: Decodable {
+    struct User: Decodable {
+      let id: String?
+      let email: String?
+      let created_at: String?
+      let user_metadata: Meta?
+      struct Meta: Decodable { let discord: String? }
+    }
+    let user: User?
+  }
+  let session: Session?
+}
+
 // Flexible Jellyfin log decoder
 private struct JellyfinActivityEntry: Identifiable, Decodable {
   let Id: String
@@ -84,6 +100,9 @@ private struct JellyfinActivityEntry: Identifiable, Decodable {
 struct AdminView: View {
   let email: String
   private var isAdmin: Bool { AppConfig.adminEmails.contains(email.lowercased()) }
+
+  // Session (needed for master invite POST)
+  @State private var userId: String = ""
 
   // Data
   @State private var users: [SBUser] = []
@@ -160,7 +179,7 @@ struct AdminView: View {
           .padding(16)
         }
         .refreshable { await reloadAll() }
-        .task { await reloadAll() }
+        .task { await bootstrap() }
       }
     }
     .preferredColorScheme(.dark)
@@ -212,13 +231,13 @@ struct AdminView: View {
         onOpenTvShows: { dismiss(); NotificationCenter.default.post(name: .init("S2OpenTvShows"), object: nil) },
         onOpenAdmin: { }
       )
-      .zIndex(1000) // make sure dropdown is in front
+      .zIndex(1000)
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 8)
     .background(
       RoundedRectangle(cornerRadius: 14)
-        .fill(Color.black.opacity(0.65)) // solid look under the dropdown
+        .fill(Color.black.opacity(0.65))
     )
   }
 
@@ -510,6 +529,43 @@ struct AdminView: View {
 
   // MARK: Networking
 
+  private func bootstrap() async {
+    await fetchSession()
+    await reloadAll()
+  }
+
+  /// iOS/mobile: use Supabase-Swift to read the access token
+  /// and POST it to /api/get-session-mobile so the server can verify the JWT.
+  private func fetchSession() async {
+    do {
+      let supabase = SupabaseClient(
+        supabaseURL: AppConfig.supabaseURL,
+        supabaseKey: AppConfig.supabaseAnonKey
+      )
+      let session = try? await supabase.auth.session
+      guard let token = session?.accessToken else {
+        userId = ""
+        return
+      }
+
+      var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/get-session-mobile"))
+      req.httpMethod = "POST"
+      req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+      req.httpBody = try JSONSerialization.data(withJSONObject: ["token": token])
+
+      let (data, resp) = try await URLSession.shared.data(for: req)
+      guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+        userId = ""
+        return
+      }
+      if let env = try? JSONDecoder().decode(SessionEnvelope.self, from: data) {
+        userId = env.session?.user?.id ?? ""
+      }
+    } catch {
+      userId = ""
+    }
+  }
+
   private func reloadAll() async {
     await loadUsers()
     await fetchMasterInvite()
@@ -542,10 +598,12 @@ struct AdminView: View {
       var req = URLRequest(url: AppConfig.apiBase.appendingPathComponent("api/master-invite"))
       req.httpMethod = "POST"
       req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-      req.httpBody = Data("{}".utf8)
+      let body: [String: Any] = ["inviterId": userId]
+      req.httpBody = try JSONSerialization.data(withJSONObject: body)
       let (data, resp) = try await URLSession.shared.data(for: req)
       guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-        await MainActor.run { miError = "Failed to create master invite" }
+        let msg = String(data: data, encoding: .utf8) ?? "Failed to create master invite"
+        await MainActor.run { miError = msg }
         return
       }
       let p = try JSONDecoder().decode(MasterInvitePayload.self, from: data)
@@ -578,9 +636,22 @@ struct AdminView: View {
 
     let candidates = [
       "api/jellyfin/activity",
-      "api/jellyfin/activity/",
-      "api/jellyseerr/activity"
+      "api/jellyfin/activity/"
     ]
+
+    func parseActivityPayload(_ data: Data) -> [JellyfinActivityEntry]? {
+      if let rows = try? JSONDecoder().decode([JellyfinActivityEntry].self, from: data) {
+        return rows
+      }
+      if let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+         let arr = any["Items"] as? [[String: Any]] ?? any["items"] as? [[String: Any]] {
+        let re = try? JSONSerialization.data(withJSONObject: arr)
+        if let re, let rows = try? JSONDecoder().decode([JellyfinActivityEntry].self, from: re) {
+          return rows
+        }
+      }
+      return nil
+    }
 
     func hit(_ path: String) async throws -> [JellyfinActivityEntry] {
       var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent(path),
@@ -591,22 +662,24 @@ struct AdminView: View {
       ]
       var req = URLRequest(url: comps.url!)
       req.cachePolicy = .reloadIgnoringLocalCacheData
+      req.addValue("application/json", forHTTPHeaderField: "Accept")
       let (data, resp) = try await URLSession.shared.data(for: req)
-      guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-
-      if let rows = try? JSONDecoder().decode([JellyfinActivityEntry].self, from: data) {
-        return rows
+      guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+      if http.statusCode != 200 {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+          let msg = [json["error"], json["details"]].compactMap { $0 as? String }.joined(separator: " – ")
+          await MainActor.run { jfError = msg.isEmpty ? "Jellyfin \(http.statusCode)" : msg }
+        } else {
+          let msg = String(data: data, encoding: .utf8) ?? "Jellyfin \(http.statusCode)"
+          await MainActor.run { jfError = msg }
+        }
+        throw URLError(.badServerResponse)
       }
-      if let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-         let arr = any["Items"] as? [[String: Any]] ?? any["items"] as? [[String: Any]] {
-        let re = try JSONSerialization.data(withJSONObject: arr)
-        if let rows = try? JSONDecoder().decode([JellyfinActivityEntry].self, from: re) { return rows }
+      guard let items = parseActivityPayload(data) else {
+        await MainActor.run { jfError = "Could not parse activity response." }
+        throw URLError(.cannotParseResponse)
       }
-      if let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-         let err = any["error"] as? String, !err.isEmpty {
-        await MainActor.run { jfError = err }
-      }
-      throw URLError(.cannotParseResponse)
+      return items
     }
 
     for p in candidates {
@@ -671,7 +744,6 @@ struct AdminView: View {
         self.totalUsers = list.count
       }
 
-      // (Optional) load Stripe statuses in parallel – keep, or remove if not used
       await withTaskGroup(of: (String, StripeStatus?).self) { group in
         for u in list {
           group.addTask {
@@ -741,11 +813,10 @@ struct AdminView: View {
       req.httpBody = try JSONSerialization.data(withJSONObject: ["id": userId])
       let (_, resp) = try await URLSession.shared.data(for: req)
       if (resp as? HTTPURLResponse)?.statusCode == 200 {
-        // optimistic UI flip
         await MainActor.run {
           if let idx = users.firstIndex(where: { $0.id == userId }) {
             let u = users[idx]
-            let future = ISO8601DateFormatter().string(from: Date(timeIntervalSinceNow: 60*60*24*365*50)) // +50y
+            let future = ISO8601DateFormatter().string(from: Date(timeIntervalSinceNow: 60*60*24*365*50))
             users[idx] = SBUser(id: u.id, email: u.email, user_metadata: u.user_metadata,
                                 created_at: u.created_at, last_sign_in_at: u.last_sign_in_at, banned_until: future)
           }
