@@ -64,37 +64,6 @@ private struct SessionEnvelope: Decodable {
   let session: Session?
 }
 
-// Flexible Jellyfin log decoder
-private struct JellyfinActivityEntry: Identifiable, Decodable {
-  let Id: String
-  let Name: String?
-  let Overview: String?
-  let MediaType: String?
-  let Severity: String?
-  let UserName: String?
-  let Date: String?
-  var id: String { Id }
-
-  enum CodingKeys: String, CodingKey {
-    case Id, Name, Overview, Severity, UserName, Date
-    case MediaType = "Type"
-    case id, name, overview, severity, username, date, type
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    Id = try c.decodeIfPresent(String.self, forKey: .Id)
-      ?? c.decodeIfPresent(String.self, forKey: .id)
-      ?? UUID().uuidString
-    Name      = try c.decodeIfPresent(String.self, forKey: .Name)      ?? c.decodeIfPresent(String.self, forKey: .name)
-    Overview  = try c.decodeIfPresent(String.self, forKey: .Overview)  ?? c.decodeIfPresent(String.self, forKey: .overview)
-    Severity  = try c.decodeIfPresent(String.self, forKey: .Severity)  ?? c.decodeIfPresent(String.self, forKey: .severity)
-    UserName  = try c.decodeIfPresent(String.self, forKey: .UserName)  ?? c.decodeIfPresent(String.self, forKey: .username)
-    Date      = try c.decodeIfPresent(String.self, forKey: .Date)      ?? c.decodeIfPresent(String.self, forKey: .date)
-    MediaType = try c.decodeIfPresent(String.self, forKey: .MediaType) ?? c.decodeIfPresent(String.self, forKey: .type)
-  }
-}
-
 // MARK: - View
 
 struct AdminView: View {
@@ -114,11 +83,6 @@ struct AdminView: View {
   @State private var masterInvite: MasterInvite?
   @State private var miLoading = false
   @State private var miError = ""
-
-  // Activity
-  @State private var jfActivity: [JellyfinActivityEntry] = []
-  @State private var jfLoading = false
-  @State private var jfError = ""
 
   // Trials
   @State private var selectedUserEmail: String?
@@ -249,7 +213,7 @@ struct AdminView: View {
         analyticsCard
         masterInviteCard
       }
-      activityCard
+      // 🗑️ Jellyfin activity panel removed
     }
   }
 
@@ -327,45 +291,6 @@ struct AdminView: View {
     .padding(12)
     .background(
       LinearGradient(colors: [Color.green.opacity(0.45), Color.teal.opacity(0.35)],
-                     startPoint: .topLeading, endPoint: .bottomTrailing),
-      in: RoundedRectangle(cornerRadius: 14)
-    )
-  }
-
-  private var activityCard: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text("📜 Jellyfin Activity").font(.footnote.bold()).foregroundColor(.white)
-        Spacer()
-        Button { Task { await loadJellyfinActivity() } } label: {
-          Text("Reload").font(.caption.bold())
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(Color.white.opacity(0.15), in: Capsule())
-        }.disabled(jfLoading)
-      }
-
-      if jfLoading {
-        Text("Loading…").foregroundColor(.white.opacity(0.9))
-      } else if !jfError.isEmpty {
-        Text(jfError).foregroundColor(.red).font(.caption)
-      } else if jfActivity.isEmpty {
-        Text("No recent activity.").foregroundColor(.white.opacity(0.9)).font(.caption)
-      } else {
-        VStack(alignment: .leading, spacing: 6) {
-          ForEach(jfActivity.prefix(8)) { e in
-            let when = e.Date.flatMap(parseAnyDate)
-            let ts = when.map { DateFormatter.localizedString(from: $0, dateStyle: .short, timeStyle: .short) } ?? ""
-            Text("• \((e.Overview ?? e.Name ?? e.MediaType ?? "Activity").trimmingCharacters(in: .whitespaces))")
-              .font(.caption).foregroundColor(.white)
-            Text("\(e.UserName ?? "") \(e.MediaType ?? "")  \(ts)")
-              .font(.caption2).foregroundColor(.white.opacity(0.8))
-          }
-        }
-      }
-    }
-    .padding(12)
-    .background(
-      LinearGradient(colors: [Color.indigo.opacity(0.45), Color.blue.opacity(0.35)],
                      startPoint: .topLeading, endPoint: .bottomTrailing),
       in: RoundedRectangle(cornerRadius: 14)
     )
@@ -569,7 +494,7 @@ struct AdminView: View {
   private func reloadAll() async {
     await loadUsers()
     await fetchMasterInvite()
-    await loadJellyfinActivity()
+    // 🗑️ Jellyfin activity fetch removed
   }
 
   private func fetchMasterInvite() async {
@@ -627,72 +552,6 @@ struct AdminView: View {
       await MainActor.run { masterInvite = nil }
     } catch {
       await MainActor.run { miError = (error as NSError).localizedDescription }
-    }
-  }
-
-  private func loadJellyfinActivity() async {
-    await MainActor.run { jfLoading = true; jfError = ""; jfActivity = [] }
-    defer { Task { await MainActor.run { jfLoading = false } } }
-
-    let candidates = [
-      "api/jellyfin/activity",
-      "api/jellyfin/activity/"
-    ]
-
-    func parseActivityPayload(_ data: Data) -> [JellyfinActivityEntry]? {
-      if let rows = try? JSONDecoder().decode([JellyfinActivityEntry].self, from: data) {
-        return rows
-      }
-      if let any = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-         let arr = any["Items"] as? [[String: Any]] ?? any["items"] as? [[String: Any]] {
-        let re = try? JSONSerialization.data(withJSONObject: arr)
-        if let re, let rows = try? JSONDecoder().decode([JellyfinActivityEntry].self, from: re) {
-          return rows
-        }
-      }
-      return nil
-    }
-
-    func hit(_ path: String) async throws -> [JellyfinActivityEntry] {
-      var comps = URLComponents(url: AppConfig.apiBase.appendingPathComponent(path),
-                                resolvingAgainstBaseURL: false)!
-      comps.queryItems = [
-        .init(name: "limit", value: "50"),
-        .init(name: "ts", value: "\(Int(Date().timeIntervalSince1970))")
-      ]
-      var req = URLRequest(url: comps.url!)
-      req.cachePolicy = .reloadIgnoringLocalCacheData
-      req.addValue("application/json", forHTTPHeaderField: "Accept")
-      let (data, resp) = try await URLSession.shared.data(for: req)
-      guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-      if http.statusCode != 200 {
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-          let msg = [json["error"], json["details"]].compactMap { $0 as? String }.joined(separator: " – ")
-          await MainActor.run { jfError = msg.isEmpty ? "Jellyfin \(http.statusCode)" : msg }
-        } else {
-          let msg = String(data: data, encoding: .utf8) ?? "Jellyfin \(http.statusCode)"
-          await MainActor.run { jfError = msg }
-        }
-        throw URLError(.badServerResponse)
-      }
-      guard let items = parseActivityPayload(data) else {
-        await MainActor.run { jfError = "Could not parse activity response." }
-        throw URLError(.cannotParseResponse)
-      }
-      return items
-    }
-
-    for p in candidates {
-      do {
-        let items = try await hit(p)
-        await MainActor.run { jfActivity = items }
-        return
-      } catch { /* try next */ }
-    }
-
-    await MainActor.run {
-      jfActivity = []
-      if jfError.isEmpty { jfError = "Failed to load activity." }
     }
   }
 
