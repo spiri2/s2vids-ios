@@ -15,20 +15,20 @@ struct LoginView: View {
       content
     }
     .preferredColorScheme(.dark)
+    // Auto-restore using Keychain (only when Remember me is ON)
+    .task { await vm.restoreSession() }
 
 #if os(iOS)
-    // When the user is signed in, show the Dashboard
     .fullScreenCover(isPresented: $vm.isSignedIn) {
       DashboardView(
         email: vm.email,
-        isAdmin: false,                // TODO: pass real value from your user metadata
-        subscriptionStatus: "active",  // TODO: fetch from your API and pass through
-        isTrialing: false              // TODO: pass real value if you support trials
+        isAdmin: AppConfig.isAdmin(email: vm.email),
+        subscriptionStatus: "active",
+        isTrialing: false
       )
     }
 #endif
 
-    // Present Sign Up sheet
     .sheet(isPresented: $showSignup) {
       SignupView()
     }
@@ -87,6 +87,7 @@ private struct LoginCard: View {
       infoBanner
       emailField
       passwordField
+      rememberMeToggle
       forgotButton
       statusText
       signInButton
@@ -171,11 +172,22 @@ private struct LoginCard: View {
     }
   }
 
+  // ✅ NEW
+  private var rememberMeToggle: some View {
+    Toggle(isOn: $vm.rememberMe) {
+      Text("Remember me")
+        .font(.caption)
+        .foregroundColor(.gray)
+    }
+    .toggleStyle(SwitchToggleStyle(tint: .blue))
+    .padding(.top, 2)
+  }
+
   private var forgotButton: some View {
     Button {
       Task {
         await vm.forgotPassword(
-          redirectTo: URL(string: "https://your-site.example.com/auth/reset")!
+          redirectTo: URL(string: "https://s2vids.org/auth/reset")!
         )
       }
     } label: {
@@ -237,4 +249,13 @@ private struct LoginCard: View {
     .frame(maxWidth: .infinity, alignment: .center)
     .padding(.top, 6)
   }
+}
+
+// MARK: - Small helper to fix the TimeInterval → Int complaint
+private func formatCountdown(_ seconds: TimeInterval) -> String {
+  let total = max(0, Int(seconds.rounded()))
+  let m = total / 60
+  let s = total % 60
+  if m > 0 { return "\(m)m \(s)s" }
+  return "\(s)s"
 }
