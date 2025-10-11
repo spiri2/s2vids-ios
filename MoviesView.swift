@@ -101,7 +101,7 @@ struct MoviesView: View {
   @State private var httpWarning = false
   private var showHttpWarning: Bool { httpWarning && !isPlayerError }
 
-  // ⬅️ FIX: Make this @State so we can assign in methods
+  // Observers
   @State private var itemStatusObserver: NSKeyValueObservation? = nil
   @State private var playerFailObserver: NSObjectProtocol? = nil
 
@@ -122,9 +122,6 @@ struct MoviesView: View {
   private var effectiveIsAdmin: Bool {
     isAdmin || email.lowercased() == "mspiri2@outlook.com"
   }
-
-  // 👇 Swipe-to-dismiss state
-  @State private var dragStartX: CGFloat = .infinity
 
   var body: some View {
     ZStack {
@@ -188,8 +185,15 @@ struct MoviesView: View {
       ZStack(alignment: .topTrailing) {
         if let p = player {
           VideoPlayer(player: p)
+            .id(currentMovieId)                 // ⬅️ force fresh AVPlayerLayer per title
             .ignoresSafeArea()
-            .onAppear { startObserving(for: currentMovieId) }
+            .onAppear {
+              startObserving(for: currentMovieId)
+              // Nudge playback on next runloop to avoid first-launch black frame
+              DispatchQueue.main.async {
+                p.play()
+              }
+            }
         } else {
           Color.black.ignoresSafeArea()
         }
@@ -212,23 +216,10 @@ struct MoviesView: View {
         .padding()
       }
     }
-
-    // 👇 Swipe-from-left-edge to dismiss (matches Admin/Discover)
-    .highPriorityGesture(
-      DragGesture(minimumDistance: 20, coordinateSpace: .local)
-        .onChanged { value in
-          if dragStartX == .infinity { dragStartX = value.startLocation.x }
-        }
-        .onEnded { value in
-          defer { dragStartX = .infinity }
-          let startedAtEdge = dragStartX <= 30
-          let horizontal = value.translation.width
-          let vertical = abs(value.translation.height)
-          if startedAtEdge && horizontal > 70 && vertical < 60 {
-            dismiss()
-          }
-        }
-    )
+    // Edge-only swipe zone so ScrollView can receive vertical drags
+    .overlay(alignment: .leading) {
+      EdgeSwipeToDismiss(width: 24) { dismiss() }
+    }
   }
 
   // MARK: Header + Search
@@ -700,13 +691,12 @@ struct MoviesView: View {
     }
 
     print("🎬 Streaming:", url.absoluteString)
-    if url.scheme?.lowercased() == "http" {
-      httpWarning = true
-    }
+    if url.scheme?.lowercased() == "http" { httpWarning = true }
 
     let asset = AVURLAsset(url: url, options: nil)
     let item = AVPlayerItem(asset: asset)
     let p = AVPlayer(playerItem: item)
+    p.automaticallyWaitsToMinimizeStalling = false   // ⬅️ snappier start / reduce black-first
     player = p
     playerOpen = true
 
@@ -1069,5 +1059,40 @@ private struct MoviesSecondaryButtonStyle: ButtonStyle {
       .padding(.horizontal, 12).padding(.vertical, 7)
       .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.3)))
       .opacity(configuration.isPressed ? 0.8 : 1.0)
+  }
+}
+
+// MARK: - Edge-only left swipe (so ScrollView can scroll)
+
+private struct EdgeSwipeToDismiss: View {
+  let width: CGFloat
+  let onDismiss: () -> Void
+  @State private var start: CGPoint = .zero
+  @State private var isActive = false
+
+  var body: some View {
+    Rectangle()
+      .fill(Color.clear)
+      .frame(width: width)
+      .contentShape(Rectangle())
+      .gesture(
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+          .onChanged { value in
+            if !isActive {
+              start = value.startLocation
+              if start.x <= width && abs(value.translation.width) > abs(value.translation.height) {
+                isActive = true
+              }
+            }
+          }
+          .onEnded { value in
+            defer { isActive = false }
+            guard start.x <= width else { return }
+            let horizontal = value.translation.width
+            let vertical = abs(value.translation.height)
+            if horizontal > 70 && vertical < 60 { onDismiss() }
+          }
+      )
+      .allowsHitTesting(true)
   }
 }
