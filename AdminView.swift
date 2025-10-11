@@ -94,6 +94,9 @@ struct AdminView: View {
   @State private var showSettings = false
   @Environment(\.dismiss) private var dismiss
 
+  // Swipe-to-dismiss (edge) tracking
+  @State private var dragStartX: CGFloat = .infinity
+
   // Per-user actions state
   @State private var deletingUser: String? = nil
   @State private var banningUser: String? = nil
@@ -175,9 +178,28 @@ struct AdminView: View {
       case .none: Text("")
       }
     }
+
+    // 👇 Swipe-from-left-edge to dismiss (like a back gesture)
+    .highPriorityGesture(
+      DragGesture(minimumDistance: 20, coordinateSpace: .local)
+        .onChanged { value in
+          if dragStartX == .infinity { dragStartX = value.startLocation.x }
+        }
+        .onEnded { value in
+          defer { dragStartX = .infinity }
+          // Only trigger if gesture started near the left edge and moved right enough,
+          // and wasn't a mostly-vertical gesture.
+          let startedAtEdge = dragStartX <= 30
+          let horizontal = value.translation.width
+          let vertical = abs(value.translation.height)
+          if startedAtEdge && horizontal > 70 && vertical < 60 {
+            dismiss()
+          }
+        }
+    )
   }
 
-  // MARK: Header
+  // MARK: Header (with instant navigation dropdown)
 
   private var header: some View {
     HStack(spacing: 12) {
@@ -185,15 +207,20 @@ struct AdminView: View {
         .font(.system(size: 22, weight: .heavy))
         .foregroundColor(.white)
       Spacer()
+
+      // ⬇️ Same instantaneous behavior used in Movies/Settings:
+      // dismiss current page first, then notify parent to open target page.
       UserMenuButton(
         email: email, isAdmin: true,
         onRequireAccess: { },
-        onLogout: { NotificationCenter.default.post(name: .init("S2VidsDidLogout"), object: nil) },
-        onOpenSettings: { showSettings = true },
-        onOpenMovies: { dismiss(); NotificationCenter.default.post(name: .init("S2OpenMovies"), object: nil) },
+        onLogout: {
+          NotificationCenter.default.post(name: .init("S2VidsDidLogout"), object: nil)
+        },
+        onOpenSettings: { showSettings = true }, // local cover is fine
+        onOpenMovies:   { dismiss(); NotificationCenter.default.post(name: .init("S2OpenMovies"), object: nil) },
         onOpenDiscover: { dismiss(); NotificationCenter.default.post(name: .init("S2OpenDiscover"), object: nil) },
-        onOpenTvShows: { dismiss(); NotificationCenter.default.post(name: .init("S2OpenTvShows"), object: nil) },
-        onOpenAdmin: { }
+        onOpenTvShows:  { dismiss(); NotificationCenter.default.post(name: .init("S2OpenTvShows"), object: nil) },
+        onOpenAdmin:    { /* already here */ }
       )
       .zIndex(1000)
     }
@@ -213,7 +240,6 @@ struct AdminView: View {
         analyticsCard
         masterInviteCard
       }
-      // 🗑️ Jellyfin activity panel removed
     }
   }
 
@@ -494,7 +520,6 @@ struct AdminView: View {
   private func reloadAll() async {
     await loadUsers()
     await fetchMasterInvite()
-    // 🗑️ Jellyfin activity fetch removed
   }
 
   private func fetchMasterInvite() async {
