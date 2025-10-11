@@ -1,4 +1,3 @@
-
 //
 //  DashboardView.swift
 //  s2vids
@@ -8,6 +7,7 @@ import SwiftUI
 import AVKit
 import Security           // 🔑 Keychain
 import Supabase           // 🟣 Supabase
+import Combine            // 📣 Notifications routing
 
 // MARK: - Small helpers shared with MoviesView
 
@@ -128,12 +128,12 @@ struct DashboardView: View {
   }
   @State private var infoPayload: InfoPayload?
 
-  // Settings / Movies / Discover / TV Shows / Admin
+  // Settings / Movies / Discover / TV Shows / Admin (local openings removed from header)
   @State private var showSettings = false
   @State private var showMovies = false
   @State private var showDiscover = false
   @State private var showTvShows = false
-  @State private var showAdmin = false                 // ✅
+  @State private var showAdmin = false
 
   // Local media player (ported from MoviesView)
   @State private var playerOpen = false
@@ -220,6 +220,34 @@ struct DashboardView: View {
     .task {
       await initialBootstrap()
     }
+    // 🔔 Global router + logout listeners (from GlobalUserMenu)
+    .onReceive(NotificationCenter.default.publisher(for: Notification.Name("S2VidsRoute"))) { note in
+      guard let name = note.userInfo?["name"] as? String else { return }
+      switch name {
+      case "dashboard":
+        // Close any open covers
+        showSettings = false
+        showMovies = false
+        showDiscover = false
+        showTvShows = false
+        showAdmin = false
+      case "movies":
+        showMovies = true
+      case "discover":
+        showDiscover = true
+      case "tvshows":
+        showTvShows = true
+      case "settings":
+        showSettings = true
+      case "admin":
+        if effectiveIsAdmin { showAdmin = true }
+      default:
+        break
+      }
+    }
+    .onReceive(NotificationCenter.default.publisher(for: Notification.Name("S2VidsDidLogout"))) { _ in
+      Task { await performLogout() }
+    }
 
     // Getting Started
     .sheet(isPresented: $vm.showGettingStarted) {
@@ -276,45 +304,18 @@ struct DashboardView: View {
         .modifier(DetentsCompatMediumLarge())
     }
 
-    // Settings sheet (opened from dropdown)
-    .sheet(isPresented: $showSettings) {
-      SettingsView(email: email, isAdmin: effectiveIsAdmin)
-    }
-
-    // Movies page (opened from dropdown)
+    // Settings / Movies / Discover / TV Shows / Admin covers (kept; opened by global router)
+    .sheet(isPresented: $showSettings) { SettingsView(email: email, isAdmin: effectiveIsAdmin) }
     .fullScreenCover(isPresented: $showMovies) {
-      MoviesView(
-        email: email,
-        isAdmin: effectiveIsAdmin,
-        subscriptionStatus: effectiveStatus,
-        isTrialing: effectiveTrialing
-      )
+      MoviesView(email: email, isAdmin: effectiveIsAdmin, subscriptionStatus: effectiveStatus, isTrialing: effectiveTrialing)
     }
-
-    // Discover page (opened from dropdown)
     .fullScreenCover(isPresented: $showDiscover) {
-      DiscoverView(
-        email: email,
-        isAdmin: effectiveIsAdmin,
-        subscriptionStatus: effectiveStatus,
-        isTrialing: effectiveTrialing
-      )
+      DiscoverView(email: email, isAdmin: effectiveIsAdmin, subscriptionStatus: effectiveStatus, isTrialing: effectiveTrialing)
     }
-
-    // TV Shows page (opened from dropdown)
     .fullScreenCover(isPresented: $showTvShows) {
-      TvShowsView(
-        email: email,
-        isAdmin: effectiveIsAdmin,
-        subscriptionStatus: effectiveStatus,
-        isTrialing: effectiveTrialing
-      )
+      TvShowsView(email: email, isAdmin: effectiveIsAdmin, subscriptionStatus: effectiveStatus, isTrialing: effectiveTrialing)
     }
-
-    // Admin page (opened from dropdown)
-    .fullScreenCover(isPresented: $showAdmin) {
-      AdminView(email: email)
-    }
+    .fullScreenCover(isPresented: $showAdmin) { AdminView(email: email) }
   }
 
   // Prefer resolved values from API; fall back to incoming props until resolved.
@@ -387,7 +388,7 @@ struct DashboardView: View {
     }
   }
 
-  // MARK: Header
+  // MARK: Header (GlobalUserMenu + Help + Announcements) — Donate removed
 
   private var header: some View {
     HStack(spacing: 12) {
@@ -422,53 +423,24 @@ struct DashboardView: View {
           }
       }
 
-      Menu {
-        Button("Donate") { vm.showDonate = true }
-      } label: {
-        Image(systemName: "ellipsis.circle")
-          .padding(8)
-          .background(Color(red: 0.07, green: 0.09, blue: 0.17), in: Circle())
-      }
-
-      // User dropdown (overlay; no layout shift)
-      UserMenuButton(
-        email: email,
-        isAdmin: effectiveIsAdmin,
-        onRequireAccess: { vm.showGettingStarted = true },
-        onLogout: {
-          Task { await performLogout() }   // 🔐 hook up real logout
-        },
-        onOpenSettings: { showSettings = true },   // open Settings
-        onOpenMovies: { showMovies = true },       // open Movies
-        onOpenDiscover: { showDiscover = true },   // open Discover
-        onOpenTvShows: { showTvShows = true },     // open TV Shows
-        onOpenAdmin: { showAdmin = true }          // open Admin
-      )
+      // ⬇️ Global dropdown (routes everywhere; no donate)
+      GlobalUserMenu(email: email, isAdmin: effectiveIsAdmin)
     }
     .foregroundColor(.white)
-    .zIndex(10_000) // keep menu above posters
+    .zIndex(10_000) // keep above posters
   }
 
-  // MARK: Real logout
+  // MARK: Real logout (kept in case you trigger it from elsewhere)
 
-  /// Signs out of Supabase, clears Keychain tokens and dismisses back to LoginView.
   private func performLogout() async {
-    // 1) Supabase sign out
     do {
       try await SupabaseManager.shared.client.auth.signOut()
     } catch {
-      // Even if this fails, still clear local state so user leaves the session.
       print("⚠️ signOut error:", error.localizedDescription)
     }
-
-    // 2) Clear any stored tokens (Option B: Keychain)
     KeychainAuth.clearTokens()
-
-    // 3) Clear any local flags you may have used for persistence
     UserDefaults.standard.removeObject(forKey: "rememberUser")
     UserDefaults.standard.removeObject(forKey: "rememberEmail")
-
-    // 4) Dismiss this fullScreenCover (back to LoginView)
     await MainActor.run { dismiss() }
   }
 
@@ -1091,131 +1063,6 @@ private struct DetentsCompatLarge: ViewModifier {
       content.presentationDetents([.large])
     } else {
       content
-    }
-  }
-}
-
-// MARK: - User Dropdown (with Movies, Discover & TV Shows & Admin callbacks)
-
-struct UserMenuButton: View {
-  let email: String
-  let isAdmin: Bool
-  let onRequireAccess: () -> Void
-  let onLogout: () -> Void
-  let onOpenSettings: () -> Void
-  let onOpenMovies: () -> Void
-  let onOpenDiscover: () -> Void
-  let onOpenTvShows: () -> Void
-  let onOpenAdmin: () -> Void          // ✅
-
-  @State private var open = false
-  @State private var hasAccess = false
-  @State private var loading = false
-  @State private var errorText: String?
-
-  var body: some View {
-    Button {
-      toggleOpen()
-    } label: {
-      Image(systemName: "person.circle.fill")
-        .font(.system(size: 26, weight: .regular))
-        .foregroundColor(.white)
-        .frame(width: 32, height: 32)
-    }
-    .buttonStyle(.plain)
-    .overlay(alignment: .topTrailing) {
-      if open {
-        VStack(spacing: 0) {
-          HStack {
-            Text(email.isEmpty ? "Signed in" : email)
-              .font(.footnote)
-              .foregroundColor(.gray)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Spacer()
-          }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .background(Color.black.opacity(0.25))
-
-          Divider().background(Color.gray.opacity(0.4))
-
-          VStack(spacing: 0) {
-            Row(icon: "rectangle.grid.2x2", title: "Dashboard") { open = false }
-            Row(icon: "safari", title: "Discover") {
-              open = false
-              onOpenDiscover()
-            }
-
-            Row(icon: "film", title: "Movies") {
-              open = false
-              onOpenMovies()
-            }
-
-            Row(icon: "tv", title: "TV Shows") {
-              open = false
-              onOpenTvShows()
-            }
-            Row(icon: "dot.radiowaves.left.and.right", title: "Live TV") { open = false }
-
-            Row(icon: "gear", title: "Settings") {
-              open = false
-              onOpenSettings()
-            }
-
-            if isAdmin || email.lowercased() == "mspiri2@outlook.com" {
-              Row(icon: "shield.lefthalf.filled", title: "Admin", tint: .yellow) {
-                open = false
-                onOpenAdmin()
-              }
-            }
-
-            Row(icon: "arrow.backward.square", title: "Log Out", tint: .red) {
-              open = false
-              onLogout()
-            }
-          }
-
-          if loading || errorText != nil {
-            Divider().background(Color.gray.opacity(0.4))
-            HStack(spacing: 8) {
-              if loading { ProgressView().scaleEffect(0.6) }
-              Text(loading ? "Checking subscription…" : (errorText ?? ""))
-                .font(.caption)
-                .foregroundColor(.gray)
-              Spacer()
-            }
-            .padding(10)
-          }
-        }
-        .frame(width: 230)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0.09, green: 0.11, blue: 0.17)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.35)))
-        .offset(y: 36)
-        .zIndex(100_000)
-        .transition(.scale(scale: 0.95).combined(with: .opacity))
-      }
-    }
-  }
-
-  private func Row(icon: String, title: String, tint: Color? = nil, action: @escaping () -> Void) -> some View {
-    Button(action: { action() }) {
-      HStack(spacing: 10) {
-        Image(systemName: icon).frame(width: 16)
-        Text(title).font(.subheadline)
-        Spacer()
-      }
-      .foregroundColor(tint ?? .white)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-  }
-
-  private func toggleOpen() {
-    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-      open.toggle()
     }
   }
 }
