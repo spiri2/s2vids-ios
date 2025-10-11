@@ -115,6 +115,9 @@ struct DiscoverView: View {
   // Settings
   @State private var showSettings = false
 
+  // Swipe-to-dismiss (edge)
+  @State private var dragStartX: CGFloat = .infinity
+
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.063, blue: 0.125).ignoresSafeArea()
@@ -177,6 +180,23 @@ struct DiscoverView: View {
           .padding()
       }
     }
+
+    // 👇 Swipe-from-left-edge to dismiss (like a back gesture)
+    .highPriorityGesture(
+      DragGesture(minimumDistance: 20, coordinateSpace: .local)
+        .onChanged { value in
+          if dragStartX == .infinity { dragStartX = value.startLocation.x }
+        }
+        .onEnded { value in
+          defer { dragStartX = .infinity }
+          let startedAtEdge = dragStartX <= 30
+          let horizontal = value.translation.width
+          let vertical = abs(value.translation.height)
+          if startedAtEdge && horizontal > 70 && vertical < 60 {
+            dismiss()
+          }
+        }
+    )
   }
 
   // MARK: Header
